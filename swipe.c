@@ -11,6 +11,17 @@
 #define SWIPE_THRESHOLD 0.15f
 #define SWIPE_VELOCITY_THRESHOLD 0.5f
 #define SWIPE_COOLDOWN 0.3
+#define NATURAL_SWIPE 1
+#define SKIP_EMPTY 1
+#define WRAP_AROUND 1
+
+#if NATURAL_SWIPE
+#define SWIPE_LEFT "next"
+#define SWIPE_RIGHT "prev"
+#else
+#define SWIPE_LEFT "prev"
+#define SWIPE_RIGHT "next"
+#endif
 
 static pthread_mutex_t gestureMutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -81,104 +92,27 @@ typedef void (*MTContactCallbackFunction)(int device, MtTouch *data,
                                           int nFingers, double timestamp,
                                           int frame);
 
-static int get_allowed_workspaces(char allowed[][WORKSPACE_NAME_SIZE]) {
-  const char *aero = get_aerospace_path();
-  if (!aero || aero[0] == '\0') {
-    return 0;
-  }
-
-  char cmd[512];
-  snprintf(cmd, sizeof(cmd), "%s list-workspaces --monitor mouse --empty no",
-           aero);
-  FILE *fp = popen(cmd, "r");
-  if (!fp) {
-    fprintf(stderr, "Error: Unable to execute '%s'\n", cmd);
-    return 0;
-  }
-  int count = 0;
-  while (count < MAX_WORKSPACES &&
-         fgets(allowed[count], WORKSPACE_NAME_SIZE, fp)) {
-    allowed[count][strcspn(allowed[count], "\n")] = '\0';
-    count++;
-  }
-  pclose(fp);
-  return count;
-}
-
-static bool get_current_workspace(char *current, size_t size) {
-  const char *aero = get_aerospace_path();
-  if (!aero || aero[0] == '\0') {
-    return false;
-  }
-
-  char cmd[512];
-  snprintf(cmd, sizeof(cmd), "%s list-workspaces --focused", aero);
-  FILE *fp = popen(cmd, "r");
-  if (!fp) {
-    fprintf(stderr, "Error: Unable to execute '%s'\n", cmd);
-    return false;
-  }
-  if (!fgets(current, size, fp)) {
-    pclose(fp);
-    return false;
-  }
-  current[strcspn(current, "\n")] = '\0';
-  pclose(fp);
-  return true;
-}
-
 static void switch_workspace(const char *ws) {
   const char *aero = get_aerospace_path();
   if (!aero || aero[0] == '\0') {
     return;
   }
 
-  char cmd[512];
-  snprintf(cmd, sizeof(cmd), "%s workspace %s", aero, ws);
+  char list_workspaces_cmd[512];
+  int list_len = snprintf(list_workspaces_cmd, sizeof(list_workspaces_cmd),
+                 "%s list-workspaces --monitor focused --empty no | ",
+                 aero);
+  char* switch_workspace_cmd = list_workspaces_cmd + list_len;
+
+  snprintf(switch_workspace_cmd, sizeof(list_workspaces_cmd) - list_len * sizeof(char),
+           "%s workspace %s%s", aero, WRAP_AROUND ? "--wrap-around " : "", ws);
+
+  char* cmd = WRAP_AROUND ? list_workspaces_cmd : switch_workspace_cmd;
   printf("Executing: %s\n", cmd);
   int ret = system(cmd);
   if (ret != 0) {
     fprintf(stderr, "Error: Command failed: %s\n", cmd);
   }
-}
-
-static void switch_workspace_if_allowed(int direction) {
-  char current[WORKSPACE_NAME_SIZE];
-  if (!get_current_workspace(current, sizeof(current))) {
-    fprintf(stderr, "Error: Failed to retrieve current workspace.\n");
-    return;
-  }
-  char allowed[MAX_WORKSPACES][WORKSPACE_NAME_SIZE];
-  int allowed_count = get_allowed_workspaces(allowed);
-  if (allowed_count == 0) {
-    fprintf(stderr, "Warning: No allowed workspaces found.\n");
-    return;
-  }
-
-  int current_index = -1;
-  for (int i = 0; i < allowed_count; i++) {
-    if (strcmp(allowed[i], current) == 0) {
-      current_index = i;
-      break;
-    }
-  }
-  if (current_index < 0) {
-    fprintf(stderr,
-            "Warning: Current workspace '%s' not found in allowed list; "
-            "defaulting to index 0.\n",
-            current);
-    current_index = 0;
-  }
-
-  int new_index = current_index + direction;
-  if (new_index < 0 || new_index >= allowed_count) {
-    printf("No workspace available in that direction.\n");
-    return;
-  }
-
-  printf("Switching workspace from '%s' to '%s'\n", current,
-         allowed[new_index]);
-  switch_workspace(allowed[new_index]);
 }
 
 static void gestureCallback(int _device, MtTouch *contacts, int numContacts,
@@ -231,7 +165,7 @@ static void gestureCallback(int _device, MtTouch *contacts, int numContacts,
       consecutiveLeftFrames = 0;
       if (consecutiveRightFrames >= 2) {
         printf("Right swipe (by velocity) detected.\n");
-        switch_workspace_if_allowed(1);
+        switch_workspace(SWIPE_RIGHT);
         triggered = true;
         consecutiveRightFrames = 0;
       }
@@ -240,17 +174,17 @@ static void gestureCallback(int _device, MtTouch *contacts, int numContacts,
       consecutiveRightFrames = 0;
       if (consecutiveLeftFrames >= 2) {
         printf("Left swipe (by velocity) detected.\n");
-        switch_workspace_if_allowed(-1);
+        switch_workspace(SWIPE_LEFT);
         triggered = true;
         consecutiveLeftFrames = 0;
       }
     } else if (delta > SWIPE_THRESHOLD) {
       printf("Right swipe (by position) detected.\n");
-      switch_workspace_if_allowed(1);
+      switch_workspace(SWIPE_RIGHT);
       triggered = true;
     } else if (delta < -SWIPE_THRESHOLD) {
       printf("Left swipe (by position) detected.\n");
-      switch_workspace_if_allowed(-1);
+      switch_workspace(SWIPE_LEFT);
       triggered = true;
     }
 

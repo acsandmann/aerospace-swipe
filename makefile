@@ -37,6 +37,8 @@ uninstall_plist:
 	@echo "Removing launch agent plist from $(LAUNCH_AGENTS_DIR)..."
 	rm -f $(LAUNCH_AGENTS_DIR)/$(PLIST_FILE)
 
+build: all sign
+
 install: all sign install_plist load_plist
 
 uninstall: uninstall_plist clean
