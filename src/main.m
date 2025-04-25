@@ -13,42 +13,44 @@
 #define SWIPE_VELOCITY_THRESHOLD 0.75f
 #define SWIPE_COOLDOWN 0.3f
 
-static Aerospace* client = NULL;
-static CFTypeRef haptic = NULL;
-static Config config;
-static pthread_mutex_t gestureMutex = PTHREAD_MUTEX_INITIALIZER;
+static aerospace* g_aerospace = NULL;
+static CFTypeRef g_haptic = NULL;
+static Config g_config;
+static pthread_mutex_t g_gesture_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void switch_workspace(const char* ws)
 {
-	if (config.skip_empty || config.wrap_around) {
-		char* workspaces = aerospace_list_workspaces(client, config.skip_empty);
+	if (g_config.skip_empty || g_config.wrap_around) {
+		char* workspaces = aerospace_list_workspaces(g_aerospace, !g_config.skip_empty);
 		if (!workspaces) {
 			fprintf(stderr, "Error: Unable to retrieve workspace list.\n");
 			return;
 		}
-		char* result = aerospace_workspace(client, config.wrap_around, ws, workspaces);
+		char* result = aerospace_workspace(g_aerospace, g_config.wrap_around, ws, workspaces);
 		if (result) {
 			fprintf(stderr, "Error: Failed to switch workspace to '%s'.\n", ws);
 		} else {
 			printf("Switched workspace successfully to '%s'.\n", ws);
 		}
 		free(workspaces);
+		free(result);
 	} else {
-		char* result = aerospace_switch(client, ws);
+		char* result = aerospace_switch(g_aerospace, ws);
 		if (result) {
 			fprintf(stderr, "Error: Failed to switch workspace: '%s'\n", result);
 		} else {
 			printf("Switched workspace successfully to '%s'.\n", ws);
 		}
+		free(result);
 	}
 
-	if (config.haptic == true)
-		haptic_actuate(haptic, 3);
+	if (g_config.haptic == true)
+		haptic_actuate(g_haptic, 3);
 }
 
 static void gestureCallback(touch* contacts, int numContacts)
 {
-	pthread_mutex_lock(&gestureMutex);
+	pthread_mutex_lock(&g_gesture_mutex);
 	static bool swiping = false;
 	static float startAvgX = 0.0f;
 	static float startAvgY = 0.0f;
@@ -56,11 +58,11 @@ static void gestureCallback(touch* contacts, int numContacts)
 	static int consecutiveRightFrames = 0;
 	static int consecutiveLeftFrames = 0;
 
-	if (numContacts != config.fingers || (contacts[0].timestamp - lastSwipeTime) < SWIPE_COOLDOWN) {
+	if (numContacts != g_config.fingers || (contacts[0].timestamp - lastSwipeTime) < SWIPE_COOLDOWN) {
 		swiping = false;
 		consecutiveRightFrames = 0;
 		consecutiveLeftFrames = 0;
-		pthread_mutex_unlock(&gestureMutex);
+		pthread_mutex_unlock(&g_gesture_mutex);
 		return;
 	}
 
@@ -86,12 +88,12 @@ static void gestureCallback(touch* contacts, int numContacts)
 		consecutiveLeftFrames = 0;
 	} else {
 		const float deltaX = avgX - startAvgX;
-        const float deltaY = avgY - startAvgY;
+		const float deltaY = avgY - startAvgY;
 
-        if (fabs(deltaY) > fabs(deltaX)) {
-            pthread_mutex_unlock(&gestureMutex);
-            return;
-        }
+		if (fabs(deltaY) > fabs(deltaX)) {
+			pthread_mutex_unlock(&g_gesture_mutex);
+			return;
+		}
 
 		bool triggered = false;
 		if (avgVelX > SWIPE_VELOCITY_THRESHOLD) {
@@ -99,7 +101,7 @@ static void gestureCallback(touch* contacts, int numContacts)
 			consecutiveLeftFrames = 0;
 			if (consecutiveRightFrames >= 2) {
 				NSLog(@"Right swipe (by velocity) detected.\n");
-				switch_workspace(config.swipe_right);
+				switch_workspace(g_config.swipe_right);
 				triggered = true;
 				consecutiveRightFrames = 0;
 			}
@@ -108,17 +110,17 @@ static void gestureCallback(touch* contacts, int numContacts)
 			consecutiveRightFrames = 0;
 			if (consecutiveLeftFrames >= 2) {
 				NSLog(@"Left swipe (by velocity) detected.\n");
-				switch_workspace(config.swipe_left);
+				switch_workspace(g_config.swipe_left);
 				triggered = true;
 				consecutiveLeftFrames = 0;
 			}
 		} else if (deltaX > SWIPE_THRESHOLD) {
 			NSLog(@"Right swipe (by position) detected.\n");
-			switch_workspace(config.swipe_right);
+			switch_workspace(g_config.swipe_right);
 			triggered = true;
 		} else if (deltaX < -SWIPE_THRESHOLD) {
 			NSLog(@"Left swipe (by position) detected.\n");
-			switch_workspace(config.swipe_left);
+			switch_workspace(g_config.swipe_left);
 			triggered = true;
 		}
 
@@ -128,7 +130,7 @@ static void gestureCallback(touch* contacts, int numContacts)
 		}
 	}
 
-	pthread_mutex_unlock(&gestureMutex);
+	pthread_mutex_unlock(&g_gesture_mutex);
 }
 
 static CGEventRef key_handler(CGEventTapProxy proxy,
@@ -243,16 +245,24 @@ int main(int argc, const char* argv[])
 
 		NSLog(@"Accessibility permission granted. Continuing app initialization...");
 
-		config = load_config();
-		client = aerospace_new(NULL);
-		if (!client) {
+		g_config = load_config();
+		NSLog(@"Loaded config: fingers=%d, skip_empty=%s, wrap_around=%s, haptic=%s, swipe_left='%s', swipe_right='%s'",
+			g_config.fingers,
+			g_config.skip_empty ? "YES" : "NO",
+			g_config.wrap_around ? "YES" : "NO",
+			g_config.haptic ? "YES" : "NO",
+			g_config.swipe_left,
+			g_config.swipe_right);
+
+		g_aerospace = aerospace_new(NULL);
+		if (!g_aerospace) {
 			fprintf(stderr, "Error: Failed to initialize Aerospace client.\n");
 			exit(EXIT_FAILURE);
 		}
-		haptic = haptic_open_default();
-		if (!haptic) {
+		g_haptic = haptic_open_default();
+		if (!g_haptic) {
 			fprintf(stderr, "Error: Failed to initialize haptic actuator.\n");
-			aerospace_close(client);
+			aerospace_close(g_aerospace);
 			exit(EXIT_FAILURE);
 		}
 

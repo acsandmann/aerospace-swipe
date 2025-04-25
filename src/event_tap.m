@@ -68,9 +68,10 @@ bool event_tap_enabled(struct event_tap* event_tap)
 bool event_tap_begin(struct event_tap* event_tap, CGEventRef (*reference)(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void* userdata))
 {
 	event_tap->mask = 1 << NSEventTypeGesture;
-	event_tap->handle = CGEventTapCreate(kCGHIDEventTap,
+	event_tap->handle = CGEventTapCreate(
+		kCGHIDEventTap,
 		kCGHeadInsertEventTap,
-		kCGEventTapOptionDefault,
+		kCGEventTapOptionListenOnly,
 		event_tap->mask,
 		*reference,
 		event_tap);

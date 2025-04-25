@@ -2,6 +2,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOCFPlugIn.h>
 #include <IOKit/IOKitLib.h>
+#include <mach/mach_error.h>
 #include <stdio.h>
 
 static void release(CFTypeRef* typeRefRef)
@@ -69,13 +70,27 @@ CFTypeRef haptic_open_default(void)
 	return actuator;
 }
 
-IOReturn haptic_actuate(CFTypeRef actuatorRef, SInt32 actuationID)
+IOReturn _haptic_actuate(CFTypeRef actuatorRef, SInt32 actuationID)
 {
 	if (!actuatorRef || !MTActuatorIsOpen(actuatorRef)) {
+		fprintf(stderr, "Failed to return haptic feedback, actuator not open");
 		return kIOReturnNotOpen;
 	}
 
 	return MTActuatorActuate(actuatorRef, actuationID, 0, 0.0f, 0.0f);
+}
+
+bool haptic_actuate(CFTypeRef actuatorRef, SInt32 actuationID)
+{
+	IOReturn kr = _haptic_actuate(actuatorRef, actuationID);
+	if (kr != kIOReturnSuccess) {
+		fprintf(stderr,
+            "haptic_actuate failed: %s (0x%x)\n",
+            mach_error_string(kr),
+            (unsigned)kr);
+
+		return false;
+	} else return true;
 }
 
 void haptic_close(CFTypeRef actuatorRef)

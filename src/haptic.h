@@ -16,6 +16,6 @@ CFTypeRef haptic_open(UInt64 deviceID);
 
 CFTypeRef haptic_open_default(void);
 
-IOReturn haptic_actuate(CFTypeRef actuatorRef, SInt32 actuationID);
+bool haptic_actuate(CFTypeRef actuatorRef, SInt32 actuationID);
 
 void haptic_close(CFTypeRef actuatorRef);
