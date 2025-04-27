@@ -16,7 +16,7 @@ config file is optional and only needed if you want to change the default settin
 ```jsonc
 // ~/.config/aerospace-swipe/config.json
 {
-  "haptics": false,
+  "haptic": false,
   "natural_swipe": false,
   "wrap_around": true,
   "skip_empty": true,
