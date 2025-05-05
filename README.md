@@ -1,6 +1,6 @@
 # aerospace workspace switching with trackpad swipes
 
-aerospace-swipe detects x-fingered(defaults to 3) swipes on your trackpad and correspondingly switches between [aerospace](https://github.com/nikitabobko/AeroSpace) workspaces. it is meant to be a minimal, low-footprint, program that requires little to no configuration in order to deliver a good user experience.
+aerospace-swipe detects x-fingered(defaults to 3) swipes on your trackpad and correspondingly switches between [aerospace](https://github.com/nikitabobko/AeroSpace) workspaces.
 
 ## features
 - fast swipe detection and forwarding to aerospace (uses aerospace server's socket instead of cli)
@@ -30,7 +30,7 @@ config file is optional and only needed if you want to change the default settin
    git clone https://github.com/acsandmann/aerospace-swipe.git
    cd aerospace-swipe
 
-   make install
+   make install # installs a launchd service
    ```
 ## uninstallation
 
