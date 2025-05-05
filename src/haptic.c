@@ -85,12 +85,13 @@ bool haptic_actuate(CFTypeRef actuatorRef, SInt32 actuationID)
 	IOReturn kr = _haptic_actuate(actuatorRef, actuationID);
 	if (kr != kIOReturnSuccess) {
 		fprintf(stderr,
-            "haptic_actuate failed: %s (0x%x)\n",
-            mach_error_string(kr),
-            (unsigned)kr);
+			"haptic_actuate failed: %s (0x%x)\n",
+			mach_error_string(kr),
+			(unsigned)kr);
 
 		return false;
-	} else return true;
+	} else
+		return true;
 }
 
 void haptic_close(CFTypeRef actuatorRef)

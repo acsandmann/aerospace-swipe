@@ -14,6 +14,10 @@ typedef struct {
 	bool haptic;
 	bool skip_empty;
 	int fingers;
+	float swipe_cooldown;
+	float swipe_threshold; // distance
+	float velocity_swipe_threshold; // velocity
+	int velocity_frames_threshold; // distance
 	const char* swipe_left;
 	const char* swipe_right;
 } Config;
@@ -26,6 +30,10 @@ static Config default_config()
 	config.haptic = false;
 	config.skip_empty = true;
 	config.fingers = 3;
+	config.swipe_cooldown = 0.3f;
+	config.swipe_threshold = 0.15f;
+	config.velocity_swipe_threshold = 0.75f;
+	config.velocity_frames_threshold = 2;
 	config.swipe_left = "prev";
 	config.swipe_right = "next";
 	return config;
@@ -110,6 +118,22 @@ static Config load_config()
 	item = cJSON_GetObjectItem(root, "fingers");
 	if (cJSON_IsNumber(item))
 		config.fingers = item->valueint;
+
+	item = cJSON_GetObjectItem(root, "swipe_cooldown");
+	if (cJSON_IsNumber(item))
+		config.swipe_cooldown = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "swipe_threshold");
+	if (cJSON_IsNumber(item))
+		config.swipe_threshold = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "velocity_swipe_threshold");
+	if (cJSON_IsNumber(item))
+		config.velocity_swipe_threshold = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "velocity_frames_threshold");
+	if (cJSON_IsNumber(item))
+		config.velocity_frames_threshold = item->valueint;
 
 	config.swipe_left = config.natural_swipe ? "next" : "prev";
 	config.swipe_right = config.natural_swipe ? "prev" : "next";

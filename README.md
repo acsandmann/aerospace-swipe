@@ -1,12 +1,12 @@
 # aerospace workspace switching with trackpad swipes
 
-This project uses an undocumented macOS framework (`MultitouchSupport.framework`) to detect three-finger swipes on your trackpad and switch between workspaces (using the `aerospace` tiling window manager).
+aerospace-swipe detects x-fingered(defaults to 3) swipes on your trackpad and correspondingly switches between [aerospace](https://github.com/nikitabobko/AeroSpace) workspaces. it is meant to be a minimal, low-footprint, program that requires little to no configuration in order to deliver a good user experience.
 
 ## features
 - fast swipe detection and forwarding to aerospace (uses aerospace server's socket instead of cli)
-- haptics on swipe (must be enabled in configuration)
+- haptics on swipe (this is off by default)
 - customizable swipe directions (natural or inverted)
-- swipe will wrap around workspaces (1-9 workspaces, swipe right from 9 will go to 1)
+- swipe will wrap around workspaces (ex 1-9 workspaces, swipe right from 9 will go to 1)
 
 ## configuration
 config file is optional and only needed if you want to change the default settings(default settings are shown in the example below)

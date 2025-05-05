@@ -8,11 +8,6 @@
 #import <ApplicationServices/ApplicationServices.h>
 #include <pthread.h>
 
-#define ACTIVE_TOUCH_THRESHOLD 0.05f
-#define SWIPE_THRESHOLD 0.15f
-#define SWIPE_VELOCITY_THRESHOLD 0.75f
-#define SWIPE_COOLDOWN 0.3f
-
 static aerospace* g_aerospace = NULL;
 static CFTypeRef g_haptic = NULL;
 static Config g_config;
@@ -58,7 +53,7 @@ static void gestureCallback(touch* contacts, int numContacts)
 	static int consecutiveRightFrames = 0;
 	static int consecutiveLeftFrames = 0;
 
-	if (numContacts != g_config.fingers || (contacts[0].timestamp - lastSwipeTime) < SWIPE_COOLDOWN) {
+	if (numContacts != g_config.fingers || (contacts[0].timestamp - lastSwipeTime) < g_config.swipe_cooldown) {
 		swiping = false;
 		consecutiveRightFrames = 0;
 		consecutiveLeftFrames = 0;
@@ -96,29 +91,29 @@ static void gestureCallback(touch* contacts, int numContacts)
 		}
 
 		bool triggered = false;
-		if (avgVelX > SWIPE_VELOCITY_THRESHOLD) {
+		if (avgVelX > g_config.velocity_swipe_threshold) {
 			consecutiveRightFrames++;
 			consecutiveLeftFrames = 0;
-			if (consecutiveRightFrames >= 2) {
+			if (consecutiveRightFrames >= g_config.velocity_frames_threshold) {
 				NSLog(@"Right swipe (by velocity) detected.\n");
 				switch_workspace(g_config.swipe_right);
 				triggered = true;
 				consecutiveRightFrames = 0;
 			}
-		} else if (avgVelX < -SWIPE_VELOCITY_THRESHOLD) {
+		} else if (avgVelX < -g_config.velocity_swipe_threshold) {
 			consecutiveLeftFrames++;
 			consecutiveRightFrames = 0;
-			if (consecutiveLeftFrames >= 2) {
+			if (consecutiveLeftFrames >= g_config.velocity_frames_threshold) {
 				NSLog(@"Left swipe (by velocity) detected.\n");
 				switch_workspace(g_config.swipe_left);
 				triggered = true;
 				consecutiveLeftFrames = 0;
 			}
-		} else if (deltaX > SWIPE_THRESHOLD) {
+		} else if (deltaX > g_config.swipe_threshold) {
 			NSLog(@"Right swipe (by position) detected.\n");
 			switch_workspace(g_config.swipe_right);
 			triggered = true;
-		} else if (deltaX < -SWIPE_THRESHOLD) {
+		} else if (deltaX < -g_config.swipe_threshold) {
 			NSLog(@"Left swipe (by position) detected.\n");
 			switch_workspace(g_config.swipe_left);
 			triggered = true;
