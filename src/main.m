@@ -254,8 +254,8 @@ int main(int argc, const char* argv[])
 			fprintf(stderr, "Error: Failed to initialize Aerospace client.\n");
 			exit(EXIT_FAILURE);
 		}
-		g_haptic = haptic_open_default();
-		if (!g_haptic) {
+
+		if (g_config.haptic && !(g_haptic = haptic_open_default())) {
 			fprintf(stderr, "Error: Failed to initialize haptic actuator.\n");
 			aerospace_close(g_aerospace);
 			exit(EXIT_FAILURE);
