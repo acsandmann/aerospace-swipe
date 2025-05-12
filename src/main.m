@@ -46,83 +46,88 @@ static void switch_workspace(const char* ws)
 static void gestureCallback(touch* contacts, int numContacts)
 {
 	pthread_mutex_lock(&g_gesture_mutex);
-	static bool swiping = false;
-	static float startAvgX = 0.0f;
-	static float startAvgY = 0.0f;
-	static double lastSwipeTime = 0.0;
-	static int consecutiveRightFrames = 0;
-	static int consecutiveLeftFrames = 0;
 
-	if (numContacts != g_config.fingers || (contacts[0].timestamp - lastSwipeTime) < g_config.swipe_cooldown) {
-		swiping = false;
-		consecutiveRightFrames = 0;
-		consecutiveLeftFrames = 0;
+	static bool tracking = false;
+	static bool committed = false;
+	static float startX = 0, startY = 0;
+	static float peakVelX = 0;
+	static int peakDir = 0;
+	static double startTime = 0;
+	static double lastSwipeLR[2] = { 0, 0 }; // 0=left,1=right cooldowns
+
+	void (^commit)(int) = ^(int dir) {
+		if (committed)
+			return; // only commit once per gesture(when fingers are lifted this is reset)
+		double now = CFAbsoluteTimeGetCurrent();
+		int idx = (dir > 0);
+		// cooldown doesnt apply for other direction, allows quick back/forth
+		if (now - lastSwipeLR[idx] < g_config.swipe_cooldown)
+			return;
+
+		committed = true;
+		lastSwipeLR[idx] = now;
+
+		const char* ws = (dir > 0) ? g_config.swipe_right : g_config.swipe_left;
+		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+			switch_workspace(ws);
+		});
+	};
+
+	if (numContacts != g_config.fingers) {
+		if (tracking && !committed) {
+			float deltaX = contacts ? contacts[0].x - startX : 0.0f;
+			if (fabsf(deltaX) >= g_config.distance_pct)
+				commit(deltaX > 0 ? +1 : -1);
+			else if (fabsf(peakVelX) >= g_config.velocity_pct)
+				commit(peakDir);
+		}
+
+		tracking = false;
+		committed = false;
 		pthread_mutex_unlock(&g_gesture_mutex);
 		return;
 	}
 
-	float sumX = 0.0f;
-	float sumVelX = 0.0f;
-	float sumY = 0.0f;
-
+	float sumX = 0, sumY = 0, sumVX = 0;
 	for (int i = 0; i < numContacts; ++i) {
 		sumX += contacts[i].x;
-		sumVelX += contacts[i].velocity;
 		sumY += contacts[i].y;
+		sumVX += contacts[i].velocity;
+	}
+	float avgX = sumX / numContacts;
+	float avgY = sumY / numContacts;
+	float velX = sumVX / numContacts;
+
+	if (!tracking) {
+		tracking = true;
+		committed = false;
+		startX = avgX;
+		startY = avgY;
+		peakVelX = velX;
+		peakDir = (velX >= 0) ? +1 : -1;
+		startTime = contacts[0].timestamp;
+		pthread_mutex_unlock(&g_gesture_mutex);
+		return;
 	}
 
-	const float avgX = sumX / numContacts;
-	const float avgVelX = sumVelX / numContacts;
-	const float avgY = sumY / numContacts;
+	float dx = avgX - startX;
+	float dy = avgY - startY;
+	if (!committed && fabsf(dy) > fabsf(dx)) {
+		tracking = false;
+		pthread_mutex_unlock(&g_gesture_mutex);
+		return;
+	}
 
-	if (!swiping) {
-		swiping = true;
-		startAvgX = avgX;
-		startAvgY = avgY;
-		consecutiveRightFrames = 0;
-		consecutiveLeftFrames = 0;
-	} else {
-		const float deltaX = avgX - startAvgX;
-		const float deltaY = avgY - startAvgY;
+	if (fabsf(velX) > fabsf(peakVelX)) {
+		peakVelX = velX;
+		peakDir = (velX >= 0) ? +1 : -1;
+	}
 
-		if (fabs(deltaY) > fabs(deltaX)) {
-			pthread_mutex_unlock(&g_gesture_mutex);
-			return;
-		}
-
-		bool triggered = false;
-		if (avgVelX > g_config.velocity_swipe_threshold) {
-			consecutiveRightFrames++;
-			consecutiveLeftFrames = 0;
-			if (consecutiveRightFrames >= g_config.velocity_frames_threshold) {
-				NSLog(@"Right swipe (by velocity) detected.\n");
-				switch_workspace(g_config.swipe_right);
-				triggered = true;
-				consecutiveRightFrames = 0;
-			}
-		} else if (avgVelX < -g_config.velocity_swipe_threshold) {
-			consecutiveLeftFrames++;
-			consecutiveRightFrames = 0;
-			if (consecutiveLeftFrames >= g_config.velocity_frames_threshold) {
-				NSLog(@"Left swipe (by velocity) detected.\n");
-				switch_workspace(g_config.swipe_left);
-				triggered = true;
-				consecutiveLeftFrames = 0;
-			}
-		} else if (deltaX > g_config.swipe_threshold) {
-			NSLog(@"Right swipe (by position) detected.\n");
-			switch_workspace(g_config.swipe_right);
-			triggered = true;
-		} else if (deltaX < -g_config.swipe_threshold) {
-			NSLog(@"Left swipe (by position) detected.\n");
-			switch_workspace(g_config.swipe_left);
-			triggered = true;
-		}
-
-		if (triggered) {
-			lastSwipeTime = contacts[0].timestamp;
-			swiping = false;
-		}
+	if (!committed) { // commit to swipe before fingers are lifted
+		if (fabsf(dx) >= g_config.distance_pct)
+			commit(dx > 0 ? +1 : -1);
+		else if (fabsf(velX) >= g_config.velocity_pct)
+			commit(velX > 0 ? +1 : -1);
 	}
 
 	pthread_mutex_unlock(&g_gesture_mutex);
