@@ -43,92 +43,113 @@ static void switch_workspace(const char* ws)
 		haptic_actuate(g_haptic, 3);
 }
 
-static void gestureCallback(touch* contacts, int numContacts)
+#define ACTIVATE_PCT 0.05f // min 5 % travel before tracking
+#define END_PHASE 8 // NSTouchPhaseEnded
+
+#define DIR_INDEX(d) ((d) > 0)
+
+static void gestureCallback(touch* c, int n)
 {
 	pthread_mutex_lock(&g_gesture_mutex);
 
-	static bool tracking = false;
+	static enum { GS_IDLE,
+		GS_ACTIVATED } state
+		= GS_IDLE;
 	static bool committed = false;
+
 	static float startX = 0, startY = 0;
 	static float peakVelX = 0;
-	static int peakDir = 0;
-	static double startTime = 0;
-	static double lastSwipeLR[2] = { 0, 0 }; // 0=left,1=right cooldowns
+	static int dir = 0; // +1 R, -1 L
 
-	void (^commit)(int) = ^(int dir) {
+	static double lastSwipeDirTS[2] = { 0, 0 };
+
+	void (^reset)(void) = ^{ state = GS_IDLE; committed = false; };
+
+	void (^fireSwitch)(int) = ^(int d) {
 		if (committed)
-			return; // only commit once per gesture(when fingers are lifted this is reset)
+			return;
+
 		double now = CFAbsoluteTimeGetCurrent();
-		int idx = (dir > 0);
-		// cooldown doesnt apply for other direction, allows quick back/forth
-		if (now - lastSwipeLR[idx] < g_config.swipe_cooldown)
+		if (now - lastSwipeDirTS[DIR_INDEX(d)] < g_config.swipe_cooldown)
 			return;
 
 		committed = true;
-		lastSwipeLR[idx] = now;
+		lastSwipeDirTS[DIR_INDEX(d)] = now;
 
-		const char* ws = (dir > 0) ? g_config.swipe_right : g_config.swipe_left;
+		const char* ws = (d > 0) ? g_config.swipe_right : g_config.swipe_left;
 		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 			switch_workspace(ws);
 		});
 	};
 
-	if (numContacts != g_config.fingers) {
-		if (tracking && !committed) {
-			float deltaX = contacts ? contacts[0].x - startX : 0.0f;
-			if (fabsf(deltaX) >= g_config.distance_pct)
-				commit(deltaX > 0 ? +1 : -1);
+	if (n != g_config.fingers) {
+		if (state == GS_ACTIVATED) {
+			// if we never committed during the drag, check again
+			float dx = c ? (c[0].x - startX) : 0.0f;
+			if (fabsf(dx) >= g_config.distance_pct)
+				fireSwitch((dx > 0) ? +1 : -1);
 			else if (fabsf(peakVelX) >= g_config.velocity_pct)
-				commit(peakDir);
+				fireSwitch((peakVelX > 0) ? +1 : -1);
 		}
-
-		tracking = false;
-		committed = false;
+		reset();
 		pthread_mutex_unlock(&g_gesture_mutex);
 		return;
 	}
 
 	float sumX = 0, sumY = 0, sumVX = 0;
-	for (int i = 0; i < numContacts; ++i) {
-		sumX += contacts[i].x;
-		sumY += contacts[i].y;
-		sumVX += contacts[i].velocity;
+	int endedCnt = 0;
+	for (int i = 0; i < n; ++i) {
+		sumX += c[i].x;
+		sumY += c[i].y;
+		sumVX += c[i].velocity;
+		if (c[i].phase == END_PHASE)
+			++endedCnt;
 	}
-	float avgX = sumX / numContacts;
-	float avgY = sumY / numContacts;
-	float velX = sumVX / numContacts;
+	float ax = sumX / n;
+	float ay = sumY / n;
+	float vx = sumVX / n;
 
-	if (!tracking) {
-		tracking = true;
-		committed = false;
-		startX = avgX;
-		startY = avgY;
-		peakVelX = velX;
-		peakDir = (velX >= 0) ? +1 : -1;
-		startTime = contacts[0].timestamp;
+	if (state == GS_IDLE) {
+		// activation gate: 5 % horizontal, horizontal > vertical
+		float dx = ax - startX;
+		float dy = ay - startY;
+		if (fabsf(dx) >= ACTIVATE_PCT && fabsf(dx) > fabsf(dy)) {
+			state = GS_ACTIVATED;
+			startX = ax;
+			startY = ay;
+			peakVelX = vx;
+			dir = (vx >= 0) ? +1 : -1;
+		}
 		pthread_mutex_unlock(&g_gesture_mutex);
 		return;
 	}
 
-	float dx = avgX - startX;
-	float dy = avgY - startY;
-	if (!committed && fabsf(dy) > fabsf(dx)) {
-		tracking = false;
+	float dx = ax - startX;
+	float dy = ay - startY;
+
+	if (fabsf(dy) > fabsf(dx)) {
+		reset();
 		pthread_mutex_unlock(&g_gesture_mutex);
 		return;
 	}
 
-	if (fabsf(velX) > fabsf(peakVelX)) {
-		peakVelX = velX;
-		peakDir = (velX >= 0) ? +1 : -1;
+	if (fabsf(vx) > fabsf(peakVelX)) {
+		peakVelX = vx;
+		dir = (vx >= 0) ? +1 : -1;
 	}
 
-	if (!committed) { // commit to swipe before fingers are lifted
-		if (fabsf(dx) >= g_config.distance_pct)
-			commit(dx > 0 ? +1 : -1);
-		else if (fabsf(velX) >= g_config.velocity_pct)
-			commit(velX > 0 ? +1 : -1);
+	if (fabsf(vx) >= g_config.velocity_pct) {
+		fireSwitch((vx > 0) ? +1 : -1);
+		pthread_mutex_unlock(&g_gesture_mutex);
+		return;
 	}
+
+	bool distanceOK = fabsf(dx) >= g_config.distance_pct;
+	bool pressureOff = (endedCnt * 2 >= n) // majority ended
+		|| (fabsf(vx) <= g_config.velocity_pct * g_config.settle_factor); /* slow down */
+
+	if (distanceOK && pressureOff)
+		fireSwitch((dx > 0) ? +1 : -1);
 
 	pthread_mutex_unlock(&g_gesture_mutex);
 }

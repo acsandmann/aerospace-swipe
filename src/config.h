@@ -17,6 +17,7 @@ typedef struct {
 	float swipe_cooldown;
 	float distance_pct; // distance
 	float velocity_pct; // velocity
+	float settle_factor;
 	const char* swipe_left;
 	const char* swipe_right;
 } Config;
@@ -32,6 +33,7 @@ static Config default_config()
 	config.swipe_cooldown = 0.3f;
 	config.distance_pct = 0.12f; // ≥12 % travel triggers
 	config.velocity_pct = 0.50f; // ≥0.50 × w pts / s triggers
+	config.settle_factor = 0.10f; // ≤10 % of flick speed -> flick ended
 	config.swipe_left = "prev";
 	config.swipe_right = "next";
 	return config;
@@ -128,6 +130,10 @@ static Config load_config()
 	item = cJSON_GetObjectItem(root, "velocity_pct");
 	if (cJSON_IsNumber(item))
 		config.velocity_pct = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "settle_factor");
+	if (cJSON_IsNumber(item))
+		config.settle_factor = (float)item->valuedouble;
 
 	config.swipe_left = config.natural_swipe ? "next" : "prev";
 	config.swipe_right = config.natural_swipe ? "prev" : "next";
