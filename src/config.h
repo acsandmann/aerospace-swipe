@@ -33,7 +33,7 @@ static Config default_config()
 	config.swipe_cooldown = 0.3f;
 	config.distance_pct = 0.12f; // ≥12 % travel triggers
 	config.velocity_pct = 0.50f; // ≥0.50 × w pts / s triggers
-	config.settle_factor = 0.10f; // ≤10 % of flick speed -> flick ended
+	config.settle_factor = 0.15f; // ≤15 % of flick speed -> flick ended
 	config.swipe_left = "prev";
 	config.swipe_right = "next";
 	return config;
