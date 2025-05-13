@@ -61,20 +61,13 @@ static void gestureCallback(touch* c, int n)
 	static float peakVelX = 0;
 	static int dir = 0; // +1 R, -1 L
 
-	static double lastSwipeDirTS[2] = { 0, 0 };
-
 	void (^reset)(void) = ^{ state = GS_IDLE; committed = false; };
 
 	void (^fireSwitch)(int) = ^(int d) {
 		if (committed)
 			return;
 
-		double now = CFAbsoluteTimeGetCurrent();
-		if (now - lastSwipeDirTS[DIR_INDEX(d)] < g_config.swipe_cooldown)
-			return;
-
 		committed = true;
-		lastSwipeDirTS[DIR_INDEX(d)] = now;
 
 		const char* ws = (d > 0) ? g_config.swipe_right : g_config.swipe_left;
 		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -146,7 +139,7 @@ static void gestureCallback(touch* c, int n)
 
 	bool distanceOK = fabsf(dx) >= g_config.distance_pct;
 	bool pressureOff = (endedCnt * 2 >= n) // majority ended
-		|| (fabsf(vx) <= g_config.velocity_pct * g_config.settle_factor); /* slow down */
+		|| (fabsf(vx) <= g_config.velocity_pct * g_config.settle_factor); // slow down
 
 	if (distanceOK && pressureOff)
 		fireSwitch((dx > 0) ? +1 : -1);
