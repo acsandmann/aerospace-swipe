@@ -43,88 +43,194 @@ static void switch_workspace(const char* ws)
 		haptic_actuate(g_haptic, 3);
 }
 
-static void gestureCallback(touch* contacts, int numContacts)
+#define ACTIVATE_PCT 0.05f // min 5 % travel before tracking
+#define END_PHASE 8 // NSTouchPhaseEnded
+
+#define MIN_STEP 0.005f // 0.5 % pad width / frame
+#define MIN_FINGER_TRAVEL 0.015f // 1.5 % pad width to arm
+
+#define MAX_SPREAD_X 0.40f // palm X width threshold
+#define MAX_SPREAD_Y 0.15f // palm Y height threshold
+
+#define FAST_VEL_FACTOR 0.80f // ≥80 % of commit velocity
+#define MIN_STEP_FAST 0.0f
+#define MIN_TRAVEL_FAST 0.006f
+
+#define MAX_TOUCHES 16
+
+static void gestureCallback(touch* c, int n)
 {
 	pthread_mutex_lock(&g_gesture_mutex);
-	static bool swiping = false;
-	static float startAvgX = 0.0f;
-	static float startAvgY = 0.0f;
-	static double lastSwipeTime = 0.0;
-	static int consecutiveRightFrames = 0;
-	static int consecutiveLeftFrames = 0;
 
-	if (numContacts != g_config.fingers || (contacts[0].timestamp - lastSwipeTime) < g_config.swipe_cooldown) {
-		swiping = false;
-		consecutiveRightFrames = 0;
-		consecutiveLeftFrames = 0;
-		pthread_mutex_unlock(&g_gesture_mutex);
-		return;
-	}
+	enum { GS_IDLE,
+		GS_ARMED,
+		GS_COMMITTED } static state
+		= GS_IDLE;
 
-	float sumX = 0.0f;
-	float sumVelX = 0.0f;
-	float sumY = 0.0f;
+	static float startX = 0, startY = 0;
+	static float peakVelX = 0;
+	static int dir = 0;
+	static int lastFireDir = 0;
 
-	for (int i = 0; i < numContacts; ++i) {
-		sumX += contacts[i].x;
-		sumVelX += contacts[i].velocity;
-		sumY += contacts[i].y;
-	}
+	static float prev_x[MAX_TOUCHES] = { 0 };
+	static float base_x[MAX_TOUCHES] = { 0 };
 
-	const float avgX = sumX / numContacts;
-	const float avgVelX = sumVelX / numContacts;
-	const float avgY = sumY / numContacts;
+	void (^reset)(void) = ^{
+		state = GS_IDLE;
+		lastFireDir = 0;
+	};
 
-	if (!swiping) {
-		swiping = true;
-		startAvgX = avgX;
-		startAvgY = avgY;
-		consecutiveRightFrames = 0;
-		consecutiveLeftFrames = 0;
-	} else {
-		const float deltaX = avgX - startAvgX;
-		const float deltaY = avgY - startAvgY;
+	void (^fire)(int) = ^(int d) {
+		// block duplicates in the same direction without lifting
+		if (d == lastFireDir)
+			return;
 
-		if (fabs(deltaY) > fabs(deltaX)) {
+		lastFireDir = d;
+		state = GS_COMMITTED;
+
+		const char* ws = (d > 0) ? g_config.swipe_right
+								 : g_config.swipe_left;
+		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+			^{ switch_workspace(ws); });
+	};
+
+	if (state == GS_COMMITTED) {
+		bool allEnded = true;
+		for (int i = 0; i < n; ++i)
+			if (c[i].phase != END_PHASE) {
+				allEnded = false;
+				break;
+			}
+
+		if (n == 0 || allEnded) {
+			reset();
 			pthread_mutex_unlock(&g_gesture_mutex);
 			return;
 		}
 
-		bool triggered = false;
-		if (avgVelX > g_config.velocity_swipe_threshold) {
-			consecutiveRightFrames++;
-			consecutiveLeftFrames = 0;
-			if (consecutiveRightFrames >= g_config.velocity_frames_threshold) {
-				NSLog(@"Right swipe (by velocity) detected.\n");
-				switch_workspace(g_config.swipe_right);
-				triggered = true;
-				consecutiveRightFrames = 0;
-			}
-		} else if (avgVelX < -g_config.velocity_swipe_threshold) {
-			consecutiveLeftFrames++;
-			consecutiveRightFrames = 0;
-			if (consecutiveLeftFrames >= g_config.velocity_frames_threshold) {
-				NSLog(@"Left swipe (by velocity) detected.\n");
-				switch_workspace(g_config.swipe_left);
-				triggered = true;
-				consecutiveLeftFrames = 0;
-			}
-		} else if (deltaX > g_config.swipe_threshold) {
-			NSLog(@"Right swipe (by position) detected.\n");
-			switch_workspace(g_config.swipe_right);
-			triggered = true;
-		} else if (deltaX < -g_config.swipe_threshold) {
-			NSLog(@"Left swipe (by position) detected.\n");
-			switch_workspace(g_config.swipe_left);
-			triggered = true;
+		float sumX = 0, sumY = 0, sumVX = 0;
+		for (int i = 0; i < n; ++i) {
+			sumX += c[i].x;
+			sumY += c[i].y;
+			sumVX += c[i].velocity;
 		}
+		float ax = sumX / n;
+		float ay = sumY / n;
+		float vx = sumVX / n;
+		float dx = ax - startX;
 
-		if (triggered) {
-			lastSwipeTime = contacts[0].timestamp;
-			swiping = false;
+		if ((dx * lastFireDir) < 0 && fabsf(dx) >= MIN_FINGER_TRAVEL) {
+			state = GS_ARMED;
+			startX = ax;
+			startY = ay;
+			peakVelX = vx;
+			dir = (vx >= 0) ? +1 : -1;
+			for (int i = 0; i < n; ++i)
+				base_x[i] = c[i].x;
+		} else {
+			pthread_mutex_unlock(&g_gesture_mutex);
+			return;
 		}
 	}
 
+	if (n != g_config.fingers) {
+		if (state == GS_ARMED)
+			state = GS_IDLE;
+
+		for (int i = 0; i < n; ++i) {
+			base_x[i] = c[i].x;
+			prev_x[i] = c[i].x;
+		}
+
+		pthread_mutex_unlock(&g_gesture_mutex);
+		return;
+	}
+
+	float sumX = 0, sumY = 0, sumVX = 0;
+	float minX = 1, maxX = 0, minY = 1, maxY = 0;
+	for (int i = 0; i < n; ++i) {
+		sumX += c[i].x;
+		sumY += c[i].y;
+		sumVX += c[i].velocity;
+		if (c[i].x < minX)
+			minX = c[i].x;
+		if (c[i].x > maxX)
+			maxX = c[i].x;
+		if (c[i].y < minY)
+			minY = c[i].y;
+		if (c[i].y > maxY)
+			maxY = c[i].y;
+	}
+	float ax = sumX / n, ay = sumY / n, vx = sumVX / n;
+
+	if ((maxX - minX) > MAX_SPREAD_X && (maxY - minY) > MAX_SPREAD_Y) {
+		reset();
+		goto update;
+	}
+
+	if (state == GS_IDLE) {
+		bool fast = fabsf(vx) >= g_config.velocity_pct * FAST_VEL_FACTOR;
+		float need = fast ? MIN_TRAVEL_FAST : MIN_FINGER_TRAVEL;
+		bool moved = true;
+		for (int i = 0; i < n; ++i)
+			if (fabsf(c[i].x - base_x[i]) < need) {
+				moved = false;
+				break;
+			}
+
+		float dx = ax - startX;
+		float dy = ay - startY;
+		bool horizOK = fast || (fabsf(dx) >= ACTIVATE_PCT && fabsf(dx) > fabsf(dy));
+
+		if (moved && horizOK) {
+			state = GS_ARMED;
+			startX = ax;
+			startY = ay;
+			peakVelX = vx;
+			dir = (vx >= 0) ? +1 : -1;
+		}
+		goto update;
+	}
+
+	float dx = ax - startX;
+	float dy = ay - startY;
+	if (fabsf(dy) > fabsf(dx)) {
+		reset();
+		goto update;
+	}
+
+	bool fast = fabsf(vx) >= g_config.velocity_pct * FAST_VEL_FACTOR;
+	float stepReq = fast ? MIN_STEP_FAST : MIN_STEP;
+
+	bool allOK = true;
+	for (int i = 0; i < n; ++i) {
+		float ddx = c[i].x - prev_x[i];
+		if (fabsf(ddx) < stepReq || (ddx * dx) < 0) {
+			allOK = false;
+			break;
+		}
+	}
+	if (!allOK) {
+		reset();
+		goto update;
+	}
+
+	if (fabsf(vx) > fabsf(peakVelX)) {
+		peakVelX = vx;
+		dir = (vx >= 0) ? +1 : -1;
+	}
+
+	if (fabsf(vx) >= g_config.velocity_pct)
+		fire((vx > 0) ? +1 : -1);
+	else if (fabsf(dx) >= g_config.distance_pct && fabsf(vx) <= g_config.velocity_pct * g_config.settle_factor)
+		fire((dx > 0) ? +1 : -1);
+
+update:
+	for (int i = 0; i < n; ++i) {
+		prev_x[i] = c[i].x;
+		if (state == GS_IDLE)
+			base_x[i] = c[i].x;
+	}
 	pthread_mutex_unlock(&g_gesture_mutex);
 }
 
