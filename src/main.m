@@ -133,6 +133,19 @@ static void gestureCallback(touch* c, int n)
 		}
 	}
 
+	if (n != g_config.fingers) {
+		if (state == GS_ARMED)
+			state = GS_IDLE;
+
+		for (int i = 0; i < n; ++i) {
+			base_x[i] = c[i].x;
+			prev_x[i] = c[i].x;
+		}
+
+		pthread_mutex_unlock(&g_gesture_mutex);
+		return;
+	}
+
 	float sumX = 0, sumY = 0, sumVX = 0;
 	float minX = 1, maxX = 0, minY = 1, maxY = 0;
 	for (int i = 0; i < n; ++i) {
