@@ -70,18 +70,28 @@ static void gestureCallback(touch* c, int n)
 	static float startX = 0, startY = 0;
 	static float peakVelX = 0;
 	static int dir = 0;
+	static int lastFireDir = 0;
 
 	static float prev_x[MAX_TOUCHES] = { 0 };
 	static float base_x[MAX_TOUCHES] = { 0 };
 
-	void (^reset)(void) = ^{ state = GS_IDLE; };
+	void (^reset)(void) = ^{
+		state = GS_IDLE;
+		lastFireDir = 0;
+	};
+
 	void (^fire)(int) = ^(int d) {
-		if (state == GS_COMMITTED)
+		// block duplicates in the same direction without lifting
+		if (d == lastFireDir)
 			return;
+
+		lastFireDir = d;
 		state = GS_COMMITTED;
+
 		const char* ws = (d > 0) ? g_config.swipe_right
 								 : g_config.swipe_left;
-		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ switch_workspace(ws); });
+		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+			^{ switch_workspace(ws); });
 	};
 
 	if (state == GS_COMMITTED) {
@@ -91,19 +101,36 @@ static void gestureCallback(touch* c, int n)
 				allEnded = false;
 				break;
 			}
-		if (n == 0 || allEnded)
-			reset();
-		pthread_mutex_unlock(&g_gesture_mutex);
-		return;
-	}
 
-	if (n != g_config.fingers) {
-		if (state == GS_ARMED)
+		if (n == 0 || allEnded) {
 			reset();
-		for (int i = 0; i < n; ++i)
-			base_x[i] = c[i].x;
-		pthread_mutex_unlock(&g_gesture_mutex);
-		return;
+			pthread_mutex_unlock(&g_gesture_mutex);
+			return;
+		}
+
+		float sumX = 0, sumY = 0, sumVX = 0;
+		for (int i = 0; i < n; ++i) {
+			sumX += c[i].x;
+			sumY += c[i].y;
+			sumVX += c[i].velocity;
+		}
+		float ax = sumX / n;
+		float ay = sumY / n;
+		float vx = sumVX / n;
+		float dx = ax - startX;
+
+		if ((dx * lastFireDir) < 0 && fabsf(dx) >= MIN_FINGER_TRAVEL) {
+			state = GS_ARMED;
+			startX = ax;
+			startY = ay;
+			peakVelX = vx;
+			dir = (vx >= 0) ? +1 : -1;
+			for (int i = 0; i < n; ++i)
+				base_x[i] = c[i].x;
+		} else {
+			pthread_mutex_unlock(&g_gesture_mutex);
+			return;
+		}
 	}
 
 	float sumX = 0, sumY = 0, sumVX = 0;
@@ -138,7 +165,8 @@ static void gestureCallback(touch* c, int n)
 				break;
 			}
 
-		float dx = ax - startX, dy = ay - startY;
+		float dx = ax - startX;
+		float dy = ay - startY;
 		bool horizOK = fast || (fabsf(dx) >= ACTIVATE_PCT && fabsf(dx) > fabsf(dy));
 
 		if (moved && horizOK) {
@@ -151,7 +179,8 @@ static void gestureCallback(touch* c, int n)
 		goto update;
 	}
 
-	float dx = ax - startX, dy = ay - startY;
+	float dx = ax - startX;
+	float dy = ay - startY;
 	if (fabsf(dy) > fabsf(dx)) {
 		reset();
 		goto update;
