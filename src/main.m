@@ -43,19 +43,15 @@ static void switch_workspace(const char* ws)
 		haptic_actuate(g_haptic, 3);
 }
 
-#define ACTIVATE_PCT 0.05f // min 5 % travel before tracking
+#define ACTIVATE_PCT 0.05f
 #define END_PHASE 8 // NSTouchPhaseEnded
-
-#define MIN_STEP 0.005f // 0.5 % pad width / frame
-#define MIN_FINGER_TRAVEL 0.015f // 1.5 % pad width to arm
-
-#define MAX_SPREAD_X 0.40f // palm X width threshold
-#define MAX_SPREAD_Y 0.15f // palm Y height threshold
-
-#define FAST_VEL_FACTOR 0.80f // ≥80 % of commit velocity
+#define MIN_STEP 0.005f
+#define MIN_FINGER_TRAVEL 0.015f
+#define MAX_SPREAD_X 0.65f
+#define MAX_SPREAD_Y 0.50f
+#define FAST_VEL_FACTOR 0.80f
 #define MIN_STEP_FAST 0.0f
 #define MIN_TRAVEL_FAST 0.006f
-
 #define MAX_TOUCHES 16
 
 static void gestureCallback(touch* c, int n)
@@ -66,92 +62,66 @@ static void gestureCallback(touch* c, int n)
 		GS_ARMED,
 		GS_COMMITTED } static state
 		= GS_IDLE;
+	static float startX, startY, peakVelX;
+	static int dir, lastFireDir;
+	static float prev_x[MAX_TOUCHES], base_x[MAX_TOUCHES];
 
-	static float startX = 0, startY = 0;
-	static float peakVelX = 0;
-	static int dir = 0;
-	static int lastFireDir = 0;
-
-	static float prev_x[MAX_TOUCHES] = { 0 };
-	static float base_x[MAX_TOUCHES] = { 0 };
-
-	void (^reset)(void) = ^{
-		state = GS_IDLE;
-		lastFireDir = 0;
-	};
-
+	void (^reset)(void) = ^{ state = GS_IDLE; lastFireDir = 0; };
 	void (^fire)(int) = ^(int d) {
-		// block duplicates in the same direction without lifting
 		if (d == lastFireDir)
 			return;
-
 		lastFireDir = d;
 		state = GS_COMMITTED;
-
-		const char* ws = (d > 0) ? g_config.swipe_right
-								 : g_config.swipe_left;
-		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-			^{ switch_workspace(ws); });
+		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+			switch_workspace(d > 0 ? g_config.swipe_right : g_config.swipe_left);
+		});
 	};
 
 	if (state == GS_COMMITTED) {
-		bool allEnded = true;
-		for (int i = 0; i < n; ++i)
-			if (c[i].phase != END_PHASE) {
-				allEnded = false;
-				break;
-			}
-
-		if (n == 0 || allEnded) {
+		bool ended = true;
+		for (int i = 0; i < n && ended; ++i)
+			ended &= (c[i].phase == END_PHASE);
+		if (!n || ended) {
 			reset();
-			pthread_mutex_unlock(&g_gesture_mutex);
-			return;
+			goto unlock;
 		}
 
-		float sumX = 0, sumY = 0, sumVX = 0;
+		float ax = 0, ay = 0, vx = 0;
 		for (int i = 0; i < n; ++i) {
-			sumX += c[i].x;
-			sumY += c[i].y;
-			sumVX += c[i].velocity;
+			ax += c[i].x;
+			ay += c[i].y;
+			vx += c[i].velocity;
 		}
-		float ax = sumX / n;
-		float ay = sumY / n;
-		float vx = sumVX / n;
-		float dx = ax - startX;
+		ax /= n;
+		ay /= n;
+		vx /= n;
 
+		float dx = ax - startX;
 		if ((dx * lastFireDir) < 0 && fabsf(dx) >= MIN_FINGER_TRAVEL) {
 			state = GS_ARMED;
 			startX = ax;
 			startY = ay;
 			peakVelX = vx;
-			dir = (vx >= 0) ? +1 : -1;
+			dir = (vx >= 0) ? 1 : -1;
 			for (int i = 0; i < n; ++i)
 				base_x[i] = c[i].x;
-		} else {
-			pthread_mutex_unlock(&g_gesture_mutex);
-			return;
 		}
+		goto unlock;
 	}
 
 	if (n != g_config.fingers) {
 		if (state == GS_ARMED)
 			state = GS_IDLE;
-
-		for (int i = 0; i < n; ++i) {
-			base_x[i] = c[i].x;
-			prev_x[i] = c[i].x;
-		}
-
-		pthread_mutex_unlock(&g_gesture_mutex);
-		return;
+		for (int i = 0; i < n; ++i)
+			prev_x[i] = base_x[i] = c[i].x;
+		goto unlock;
 	}
 
-	float sumX = 0, sumY = 0, sumVX = 0;
-	float minX = 1, maxX = 0, minY = 1, maxY = 0;
+	float ax = 0, ay = 0, vx = 0, minX = 1, maxX = 0, minY = 1, maxY = 0;
 	for (int i = 0; i < n; ++i) {
-		sumX += c[i].x;
-		sumY += c[i].y;
-		sumVX += c[i].velocity;
+		ax += c[i].x;
+		ay += c[i].y;
+		vx += c[i].velocity;
 		if (c[i].x < minX)
 			minX = c[i].x;
 		if (c[i].x > maxX)
@@ -161,9 +131,11 @@ static void gestureCallback(touch* c, int n)
 		if (c[i].y > maxY)
 			maxY = c[i].y;
 	}
-	float ax = sumX / n, ay = sumY / n, vx = sumVX / n;
+	ax /= n;
+	ay /= n;
+	vx /= n;
 
-	if ((maxX - minX) > MAX_SPREAD_X && (maxY - minY) > MAX_SPREAD_Y) {
+	if ((maxX - minX) > MAX_SPREAD_X || (maxY - minY) > MAX_SPREAD_Y) {
 		reset();
 		goto update;
 	}
@@ -172,28 +144,21 @@ static void gestureCallback(touch* c, int n)
 		bool fast = fabsf(vx) >= g_config.velocity_pct * FAST_VEL_FACTOR;
 		float need = fast ? MIN_TRAVEL_FAST : MIN_FINGER_TRAVEL;
 		bool moved = true;
-		for (int i = 0; i < n; ++i)
-			if (fabsf(c[i].x - base_x[i]) < need) {
-				moved = false;
-				break;
-			}
+		for (int i = 0; i < n && moved; ++i)
+			moved &= fabsf(c[i].x - base_x[i]) >= need;
 
-		float dx = ax - startX;
-		float dy = ay - startY;
-		bool horizOK = fast || (fabsf(dx) >= ACTIVATE_PCT && fabsf(dx) > fabsf(dy));
-
-		if (moved && horizOK) {
+		float dx = ax - startX, dy = ay - startY;
+		if (moved && (fast || (fabsf(dx) >= ACTIVATE_PCT && fabsf(dx) > fabsf(dy)))) {
 			state = GS_ARMED;
 			startX = ax;
 			startY = ay;
 			peakVelX = vx;
-			dir = (vx >= 0) ? +1 : -1;
+			dir = (vx >= 0) ? 1 : -1;
 		}
 		goto update;
 	}
 
-	float dx = ax - startX;
-	float dy = ay - startY;
+	float dx = ax - startX, dy = ay - startY;
 	if (fabsf(dy) > fabsf(dx)) {
 		reset();
 		goto update;
@@ -201,29 +166,22 @@ static void gestureCallback(touch* c, int n)
 
 	bool fast = fabsf(vx) >= g_config.velocity_pct * FAST_VEL_FACTOR;
 	float stepReq = fast ? MIN_STEP_FAST : MIN_STEP;
-
-	bool allOK = true;
 	for (int i = 0; i < n; ++i) {
 		float ddx = c[i].x - prev_x[i];
 		if (fabsf(ddx) < stepReq || (ddx * dx) < 0) {
-			allOK = false;
-			break;
+			reset();
+			goto update;
 		}
 	}
-	if (!allOK) {
-		reset();
-		goto update;
-	}
-
 	if (fabsf(vx) > fabsf(peakVelX)) {
 		peakVelX = vx;
-		dir = (vx >= 0) ? +1 : -1;
+		dir = (vx >= 0) ? 1 : -1;
 	}
 
 	if (fabsf(vx) >= g_config.velocity_pct)
-		fire((vx > 0) ? +1 : -1);
+		fire(vx > 0 ? 1 : -1);
 	else if (fabsf(dx) >= g_config.distance_pct && fabsf(vx) <= g_config.velocity_pct * g_config.settle_factor)
-		fire((dx > 0) ? +1 : -1);
+		fire(dx > 0 ? 1 : -1);
 
 update:
 	for (int i = 0; i < n; ++i) {
@@ -231,52 +189,107 @@ update:
 		if (state == GS_IDLE)
 			base_x[i] = c[i].x;
 	}
+unlock:
 	pthread_mutex_unlock(&g_gesture_mutex);
 }
 
-static CGEventRef key_handler(CGEventTapProxy proxy,
-	CGEventType type,
-	CGEventRef event,
-	void* reference)
+typedef struct {
+	CGPoint start, last;
+	CFTimeInterval tStart, tLast;
+	CGFloat travel;
+	bool isPalm, seen;
+} FingerTrack;
+
+static CFMutableDictionaryRef gTracks;
+static const CGFloat MOVE_THRESH = 0.015, STEP_THRESH = 0.005;
+static const CFTimeInterval AGE_BEFORE_CHECK = 0.08;
+
+static void update_tracks(NSSet<NSTouch*>* touches, CFTimeInterval now)
+{
+	for (id k in (__bridge NSDictionary*)gTracks)
+		((FingerTrack*)CFDictionaryGetValue(gTracks, (__bridge const void*)k))->seen = false;
+
+	for (NSTouch* t in touches) {
+		const void* key = (__bridge const void*)t.identity;
+		FingerTrack* trk = (FingerTrack*)CFDictionaryGetValue(gTracks, key);
+		CGPoint p = t.normalizedPosition;
+
+		if (!trk) {
+			trk = calloc(1, sizeof *trk);
+			trk->start = trk->last = p;
+			trk->tStart = trk->tLast = now;
+			CFDictionarySetValue(gTracks, key, trk);
+		}
+
+		CGFloat step = hypot(p.x - trk->last.x, p.y - trk->last.y);
+		trk->travel += step;
+		trk->last = p;
+		trk->tLast = now;
+
+		bool stationary = step < STEP_THRESH;
+		bool trivialRun = trk->travel < MOVE_THRESH;
+		bool agedEnough = (now - trk->tStart) > AGE_BEFORE_CHECK;
+		trk->isPalm = stationary && trivialRun && agedEnough;
+		trk->seen = true;
+	}
+
+	NSMutableArray* dead = [NSMutableArray array];
+	for (id k in (__bridge NSDictionary*)gTracks) {
+		FingerTrack* trk = CFDictionaryGetValue(gTracks, (__bridge const void*)k);
+		if (!trk->seen) {
+			free(trk);
+			[dead addObject:k];
+		}
+	}
+	for (id k in dead)
+		CFDictionaryRemoveValue(gTracks, (__bridge const void*)k);
+}
+
+static CGEventRef key_handler(CGEventTapProxy proxy, CGEventType type,
+	CGEventRef event, void* ref)
 {
 	if (!AXIsProcessTrusted()) {
-		NSLog(@"Accessibility permission lost. Disabling event tap to allow system events.");
-		event_tap_end((struct event_tap*)reference);
+		NSLog(@"Accessibility permission lost, disabling tap.");
+		event_tap_end((struct event_tap*)ref);
 		return event;
 	}
 
-	switch (type) {
-	case kCGEventTapDisabledByTimeout:
-		NSLog(@"Timeout.\n");
-	case kCGEventTapDisabledByUserInput:
-		NSLog(@"Re‐enabling event tap.\n");
-		CGEventTapEnable(((struct event_tap*)reference)->handle, true);
-		break;
-	case NSEventTypeGesture: {
-		NSEvent* nsEvent = [NSEvent eventWithCGEvent:event];
-		NSSet<NSTouch*>* touches = nsEvent.allTouches;
-		NSUInteger count = touches.count;
-
-		if (count == 0)
-			return event;
-
-		touch* nativeTouches = malloc(sizeof(touch) * count);
-		if (nativeTouches == NULL)
-			return event;
-
-		NSUInteger i = 0;
-		for (NSTouch* aTouch in touches)
-			nativeTouches[i++] = [TouchConverter convert_nstouch:aTouch];
-
-		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-			gestureCallback(nativeTouches, count);
-			free(nativeTouches);
-		});
-
+	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+		NSLog(@"Event-tap re-enabled.");
+		CGEventTapEnable(((struct event_tap*)ref)->handle, true);
 		return event;
 	}
-	}
 
+	if (type != NSEventTypeGesture)
+		return event;
+
+	NSEvent* ev = [NSEvent eventWithCGEvent:event];
+	NSSet<NSTouch*>* touches = ev.allTouches;
+	if (!touches.count)
+		return event;
+
+	update_tracks(touches, ev.timestamp);
+
+	NSUInteger live = 0;
+	for (NSTouch* t in touches) {
+		FingerTrack* trk = CFDictionaryGetValue(gTracks, (__bridge const void*)t.identity);
+		if (trk && !trk->isPalm)
+			++live;
+	}
+	if (!live)
+		return event;
+
+	touch* buf = malloc(sizeof(touch) * live);
+	NSUInteger i = 0;
+	for (NSTouch* t in touches) {
+		FingerTrack* trk = CFDictionaryGetValue(gTracks, (__bridge const void*)t.identity);
+		if (trk && !trk->isPalm)
+			buf[i++] = [TouchConverter convert_nstouch:t];
+	}
+	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+		gestureCallback(buf, (int)live);
+		free(buf);
+	});
 	return event;
 }
 
@@ -366,6 +379,10 @@ int main(int argc, const char* argv[])
 			aerospace_close(g_aerospace);
 			exit(EXIT_FAILURE);
 		}
+
+		gTracks = CFDictionaryCreateMutable(NULL, 0,
+			&kCFTypeDictionaryKeyCallBacks, // retain keys
+			NULL); // leave values alone
 
 		event_tap_begin(&g_event_tap, key_handler);
 
