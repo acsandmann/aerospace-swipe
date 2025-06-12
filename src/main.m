@@ -47,8 +47,8 @@ static void switch_workspace(const char* ws)
 #define END_PHASE 8 // NSTouchPhaseEnded
 #define MIN_STEP 0.005f
 #define MIN_FINGER_TRAVEL 0.015f
-//#define MAX_SPREAD_X 0.65f
-//#define MAX_SPREAD_Y 0.50f
+#define MAX_SPREAD_X 0.65f
+#define MAX_SPREAD_Y 0.50f
 #define FAST_VEL_FACTOR 0.80f
 #define MIN_STEP_FAST 0.0f
 #define MIN_TRAVEL_FAST 0.006f
@@ -135,10 +135,10 @@ static void gestureCallback(touch* c, int n)
 	ay /= n;
 	vx /= n;
 
-	/*if ((maxX - minX) > MAX_SPREAD_X || (maxY - minY) > MAX_SPREAD_Y) {
-		reset();
-		goto update;
-		}*/
+	//if ((maxX - minX) > MAX_SPREAD_X || (maxY - minY) > MAX_SPREAD_Y) {
+	//	reset();
+	//	goto update;
+	//}
 
 	if (state == GS_IDLE) {
 		bool fast = fabsf(vx) >= g_config.velocity_pct * FAST_VEL_FACTOR;
@@ -201,48 +201,59 @@ typedef struct {
 } FingerTrack;
 
 static CFMutableDictionaryRef gTracks;
-static const CGFloat MOVE_THRESH = 0.015, STEP_THRESH = 0.005;
-static const CFTimeInterval AGE_BEFORE_CHECK = 0.08;
+static const CGFloat PALM_STEP   = 0.05;   // 5 % pad / frame
+static const CGFloat PALM_DISP   = 0.025;    // 2.5 % pad from origin
+static const CFTimeInterval PALM_AGE = 0.06; // 60 ms before we judge
+static const CGFloat PALM_VELOCITY = 0.1;    // 10% of pad dimension per second
 
-static void update_tracks(NSSet<NSTouch*>* touches, CFTimeInterval now)
+static void update_tracks(NSSet<NSTouch*> *touches, CFTimeInterval now)
 {
-	for (id k in (__bridge NSDictionary*)gTracks)
-		((FingerTrack*)CFDictionaryGetValue(gTracks, (__bridge const void*)k))->seen = false;
+    for (id k in (__bridge NSDictionary*)gTracks)
+        ((FingerTrack *)CFDictionaryGetValue(gTracks, (__bridge const void*)k))->seen = false;
 
-	for (NSTouch* t in touches) {
-		const void* key = (__bridge const void*)t.identity;
-		FingerTrack* trk = (FingerTrack*)CFDictionaryGetValue(gTracks, key);
-		CGPoint p = t.normalizedPosition;
+    for (NSTouch *t in touches) {
+        const void *key = (__bridge const void*)t.identity;
+        FingerTrack *trk = (FingerTrack *)CFDictionaryGetValue(gTracks, key);
+        CGPoint p = t.normalizedPosition;
 
-		if (!trk) {
-			trk = calloc(1, sizeof *trk);
-			trk->start = trk->last = p;
-			trk->tStart = trk->tLast = now;
-			CFDictionarySetValue(gTracks, key, trk);
-		}
+        if (!trk) {
+            trk = calloc(1, sizeof *trk);
+            trk->start = trk->last = p;
+            trk->tStart = trk->tLast = now;
+            CFDictionarySetValue(gTracks, key, trk);
+        }
 
-		CGFloat step = hypot(p.x - trk->last.x, p.y - trk->last.y);
-		trk->travel += step;
-		trk->last = p;
-		trk->tLast = now;
+        CFTimeInterval dt = now - trk->tLast;
 
-		bool stationary = step < STEP_THRESH;
-		bool trivialRun = trk->travel < MOVE_THRESH;
-		bool agedEnough = (now - trk->tStart) > AGE_BEFORE_CHECK;
-		trk->isPalm = stationary && trivialRun && agedEnough;
-		trk->seen = true;
-	}
+        CGFloat step = hypot(p.x - trk->last.x, p.y - trk->last.y);
+        CGFloat vel = (dt > 0) ? (step / dt) : 0.0f;
 
-	NSMutableArray* dead = [NSMutableArray array];
-	for (id k in (__bridge NSDictionary*)gTracks) {
-		FingerTrack* trk = CFDictionaryGetValue(gTracks, (__bridge const void*)k);
-		if (!trk->seen) {
-			free(trk);
-			[dead addObject:k];
-		}
-	}
-	for (id k in dead)
-		CFDictionaryRemoveValue(gTracks, (__bridge const void*)k);
+        CGFloat disp = hypot(p.x - trk->start.x, p.y - trk->start.y);
+
+        trk->last  = p;
+        trk->tLast = now;
+
+        if (!trk->isPalm) { // set until liftoff
+            bool agedEnough  = (now - trk->tStart) > PALM_AGE;
+            bool trivialDisp = disp < PALM_DISP;
+            bool slowEnough  = vel < PALM_VELOCITY;
+
+            // age + displacement + velocity
+            if (agedEnough && trivialDisp && slowEnough)
+                trk->isPalm = true;
+        }
+        trk->seen = true;
+    }
+
+    NSMutableArray *dead = [NSMutableArray array];
+    for (id k in (__bridge NSDictionary*)gTracks)
+        if (!((FingerTrack*)CFDictionaryGetValue(gTracks, (__bridge const void*)k))->seen)
+            [dead addObject:k];
+
+    for (id k in dead) {
+        free(CFDictionaryGetValue(gTracks, (__bridge const void*)k));
+        CFDictionaryRemoveValue(gTracks, (__bridge const void*)k);
+    }
 }
 
 static CGEventRef key_handler(CGEventTapProxy proxy, CGEventType type,

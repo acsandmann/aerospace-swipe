@@ -21,6 +21,7 @@ typedef struct {
 	int phase;
 	double timestamp;
 	double velocity;
+	bool is_palm;
 } touch;
 
 typedef struct {
