@@ -47,8 +47,6 @@ static void switch_workspace(const char* ws)
 #define END_PHASE 8 // NSTouchPhaseEnded
 #define MIN_STEP 0.005f
 #define MIN_FINGER_TRAVEL 0.015f
-#define MAX_SPREAD_X 0.65f
-#define MAX_SPREAD_Y 0.50f
 #define FAST_VEL_FACTOR 0.80f
 #define MIN_STEP_FAST 0.0f
 #define MIN_TRAVEL_FAST 0.006f
@@ -134,11 +132,6 @@ static void gestureCallback(touch* c, int n)
 	ax /= n;
 	ay /= n;
 	vx /= n;
-
-	//if ((maxX - minX) > MAX_SPREAD_X || (maxY - minY) > MAX_SPREAD_Y) {
-	//	reset();
-	//	goto update;
-	//}
 
 	if (state == GS_IDLE) {
 		bool fast = fabsf(vx) >= g_config.velocity_pct * FAST_VEL_FACTOR;
