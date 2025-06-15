@@ -1,5 +1,6 @@
 #define CONFIG_H
 
+#include "Carbon/Carbon.h"
 #include "cJSON.h"
 #include <pwd.h>
 #include <stdbool.h>
@@ -17,10 +18,16 @@ typedef struct {
 	float distance_pct; // distance
 	float velocity_pct; // velocity
 	float settle_factor;
+
 	float min_step;
 	float min_travel;
 	float min_step_fast;
 	float min_travel_fast;
+
+	CFTimeInterval palm_age;
+	float palm_disp;
+	float palm_velocity;
+
 	const char* swipe_left;
 	const char* swipe_right;
 } Config;
@@ -36,10 +43,16 @@ static Config default_config()
 	config.distance_pct = 0.12f; // ≥12 % travel triggers
 	config.velocity_pct = 0.50f; // ≥0.50 × w pts / s triggers
 	config.settle_factor = 0.15f; // ≤15 % of flick speed -> flick ended
+
 	config.min_step = 0.005f;
 	config.min_travel = 0.015f;
 	config.min_step_fast = 0.0f;
 	config.min_travel_fast = 0.006f;
+
+	config.palm_age = 0.06; // time in seconds before a touch can be a palm
+	config.palm_disp = 0.025f; // max displacement (% of touchpad) for a touch to be a palm
+	config.palm_velocity = 0.1f; // max velocity (trackpad % per second) for a touch to be a palm
+
 	config.swipe_left = "prev";
 	config.swipe_right = "next";
 	return config;
@@ -136,6 +149,34 @@ static Config load_config()
 	item = cJSON_GetObjectItem(root, "settle_factor");
 	if (cJSON_IsNumber(item))
 		config.settle_factor = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "min_step");
+	if (cJSON_IsNumber(item))
+		config.min_step = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "min_travel");
+	if (cJSON_IsNumber(item))
+		config.min_travel = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "min_step_fast");
+	if (cJSON_IsNumber(item))
+		config.min_step_fast = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "min_travel_fast");
+	if (cJSON_IsNumber(item))
+		config.min_travel_fast = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "palm_age");
+	if (cJSON_IsNumber(item))
+		config.palm_age = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "palm_disp");
+	if (cJSON_IsNumber(item))
+		config.palm_disp = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "palm_velocity");
+	if (cJSON_IsNumber(item))
+		config.palm_velocity = (float)item->valuedouble;
 
 	config.swipe_left = config.natural_swipe ? "next" : "prev";
 	config.swipe_right = config.natural_swipe ? "prev" : "next";

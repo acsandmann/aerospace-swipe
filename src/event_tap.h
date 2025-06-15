@@ -21,14 +21,35 @@ typedef struct {
 	int phase;
 	double timestamp;
 	double velocity;
-	bool is_palm;
 } touch;
+
+typedef struct {
+	float avg_x;
+	float avg_y;
+	float avg_vel_x;
+	int count;
+} touch_data;
 
 typedef struct {
 	double x;
 	double y;
 	double timestamp;
 } touch_state;
+
+typedef struct {
+	CGPoint start_pos;
+	CGPoint last_pos;
+	CFTimeInterval start_time;
+	CFTimeInterval last_time;
+	bool is_palm;
+	bool seen;
+} finger_track;
+
+typedef enum {
+	GESTURE_STATE_IDLE,
+	GESTURE_STATE_ARMED,
+	GESTURE_STATE_COMMITTED
+} gesture_state;
 
 @interface TouchConverter : NSObject
 + (touch)convert_nstouch:(id)nsTouch;
