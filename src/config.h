@@ -27,6 +27,7 @@ typedef struct {
 	CFTimeInterval palm_age;
 	float palm_disp;
 	float palm_velocity;
+	int palm_stationary_threshold;
 
 	const char* swipe_left;
 	const char* swipe_right;
@@ -40,18 +41,19 @@ static Config default_config()
 	config.haptic = false;
 	config.skip_empty = true;
 	config.fingers = 3;
-	config.distance_pct = 0.12f; // ≥12 % travel triggers
-	config.velocity_pct = 0.50f; // ≥0.50 × w pts / s triggers
-	config.settle_factor = 0.15f; // ≤15 % of flick speed -> flick ended
+	config.distance_pct = 0.8f; // ≥12 % travel triggers
+	config.velocity_pct = 0.38f; // ≥0.50 × w pts / s triggers
+	config.settle_factor = 0.25f; // ≤15 % of flick speed -> flick ended
 
-	config.min_step = 0.005f;
-	config.min_travel = 0.015f;
+	config.min_step = 0.003f;
+	config.min_travel = 0.010f;
 	config.min_step_fast = 0.0f;
-	config.min_travel_fast = 0.006f;
+	config.min_travel_fast = 0.004f;
 
 	config.palm_age = 0.06; // time in seconds before a touch can be a palm
 	config.palm_disp = 0.025f; // max displacement (% of touchpad) for a touch to be a palm
 	config.palm_velocity = 0.1f; // max velocity (trackpad % per second) for a touch to be a palm
+	config.palm_stationary_threshold = 3;
 
 	config.swipe_left = "prev";
 	config.swipe_right = "next";
@@ -177,6 +179,10 @@ static Config load_config()
 	item = cJSON_GetObjectItem(root, "palm_velocity");
 	if (cJSON_IsNumber(item))
 		config.palm_velocity = (float)item->valuedouble;
+
+	item = cJSON_GetObjectItem(root, "palm_stationary_threshold");
+	if (cJSON_IsNumber(item))
+		config.palm_stationary_threshold = item->valueint;
 
 	config.swipe_left = config.natural_swipe ? "next" : "prev";
 	config.swipe_right = config.natural_swipe ? "prev" : "next";
