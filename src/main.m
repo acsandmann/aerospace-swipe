@@ -152,7 +152,6 @@ static void handle_idle_state(gesture_ctx* ctx, touch* touches, int count,
 	}
 }
 
-// Handle armed state logic
 static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count,
 	float avg_x, float avg_y, float avg_vel)
 {
@@ -165,7 +164,6 @@ static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count,
 		return;
 	}
 
-	// Validate step requirements
 	bool fast = fabsf(avg_vel) >= g_config.velocity_pct * FAST_VEL_FACTOR;
 	float stepReq = fast ? g_config.min_step_fast : g_config.min_step;
 
@@ -177,13 +175,11 @@ static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count,
 		}
 	}
 
-	// Update peak velocity
 	if (fabsf(avg_vel) > fabsf(ctx->peak_velx)) {
 		ctx->peak_velx = avg_vel;
 		ctx->dir = (avg_vel >= 0) ? 1 : -1;
 	}
 
-	// Check firing conditions
 	if (fabsf(avg_vel) >= g_config.velocity_pct) {
 		fire_gesture(ctx, avg_vel > 0 ? 1 : -1);
 	} else if (fabsf(dx) >= g_config.distance_pct && fabsf(avg_vel) <= g_config.velocity_pct * g_config.settle_factor) {
@@ -191,20 +187,17 @@ static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count,
 	}
 }
 
-// Main gesture callback function
 static void gestureCallback(touch* touches, int count)
 {
 	pthread_mutex_lock(&g_gesture_mutex);
 
 	gesture_ctx* ctx = &g_gesture_ctx;
 
-	// Handle committed state
 	if (ctx->state == GS_COMMITTED) {
 		if (handle_committed_state(ctx, touches, count))
 			goto unlock;
 	}
 
-	// Handle finger count mismatch
 	if (count != g_config.fingers) {
 		if (ctx->state == GS_ARMED)
 			ctx->state = GS_IDLE;
@@ -215,19 +208,15 @@ static void gestureCallback(touch* touches, int count)
 		goto unlock;
 	}
 
-	// Calculate averages for current touches
 	float avg_x, avg_y, avg_vel, min_x, max_x, min_y, max_y;
 	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_vel,
 		&min_x, &max_x, &min_y, &max_y);
 
-	// Handle state-specific logic
 	if (ctx->state == GS_IDLE) {
 		handle_idle_state(ctx, touches, count, avg_x, avg_y, avg_vel);
 	} else if (ctx->state == GS_ARMED) {
 		handle_armed_state(ctx, touches, count, avg_x, avg_y, avg_vel);
 	}
-
-	// Update tracking arrays
 
 	for (int i = 0; i < count; ++i) {
 		ctx->prev_x[i] = touches[i].x;

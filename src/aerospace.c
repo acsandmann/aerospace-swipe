@@ -7,12 +7,15 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "aerospace.h"
 #include "cJSON.h"
 
 #define DEFAULT_MAX_BUFFER_SIZE 2048
+#define MAX_RECONNECT_ATTEMPTS 3
+#define RECONNECT_DELAY_MS 100
 
 static const char* ERROR_SOCKET_CREATE = "Failed to create Unix domain socket";
 static const char* ERROR_SOCKET_CONNECT_FMT = "Failed to connect to socket at %s";
@@ -24,10 +27,14 @@ static const char* ERROR_JSON_CREATE = "Failed to create JSON object/array";
 static const char* ERROR_JSON_PRINT = "Failed to print JSON to string";
 static const char* ERROR_JSON_DECODE = "Failed to decode JSON response";
 static const char* ERROR_RESPONSE_FORMAT = "Response does not contain valid %s field";
+static const char* ERROR_MAX_RECONNECT = "Maximum reconnection attempts exceeded";
 
 struct aerospace {
 	int fd;
 	char* socket_path;
+	bool auto_reconnect_enabled;
+	int max_reconnect_attempts;
+	int reconnect_delay_ms;
 };
 
 static void fatal_error(const char* fmt, ...)
@@ -41,6 +48,80 @@ static void fatal_error(const char* fmt, ...)
 	fprintf(stderr, "\n");
 	va_end(args);
 	exit(EXIT_FAILURE);
+}
+
+static void sleep_ms(int milliseconds)
+{
+	struct timespec ts;
+	ts.tv_sec = milliseconds / 1000;
+	ts.tv_nsec = (milliseconds % 1000) * 1000000;
+	nanosleep(&ts, NULL);
+}
+
+static bool is_connection_error(int error_code)
+{
+	return (error_code == EPIPE || error_code == ECONNRESET || error_code == ECONNABORTED || error_code == ENOTCONN || error_code == EBADF);
+}
+
+static int aerospace_reconnect_internal(aerospace* client)
+{
+	if (!client)
+		return -1;
+
+	if (client->fd >= 0) {
+		close(client->fd);
+		client->fd = -1;
+	}
+
+	client->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (client->fd < 0) {
+		return -1;
+	}
+
+	struct sockaddr_un addr;
+	memset(&addr, 0, sizeof(struct sockaddr_un));
+	addr.sun_family = AF_UNIX;
+	strncpy(addr.sun_path, client->socket_path, sizeof(addr.sun_path) - 1);
+	addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
+
+	if (connect(client->fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+		close(client->fd);
+		client->fd = -1;
+		return -1;
+	}
+
+	return 0;
+}
+
+static int aerospace_ensure_connection(aerospace* client)
+{
+	if (!client)
+		return -1;
+
+	if (aerospace_is_initialized(client)) return 0;
+
+	if (!client->auto_reconnect_enabled) {
+		errno = EBADF;
+		return -1;
+	}
+
+	for (int attempt = 0; attempt < client->max_reconnect_attempts; attempt++) {
+		if (attempt > 0) {
+			sleep_ms(client->reconnect_delay_ms);
+		}
+
+		if (aerospace_reconnect_internal(client) == 0) {
+			fprintf(stderr, "Successfully reconnected to aerospace socket (attempt %d/%d)\n",
+				attempt + 1, client->max_reconnect_attempts);
+			return 0;
+		}
+
+		fprintf(stderr, "Reconnection attempt %d/%d failed\n",
+			attempt + 1, client->max_reconnect_attempts);
+	}
+
+	errno = ECONNREFUSED;
+	return -1;
 }
 
 static ssize_t write_all(int fd, const char* restrict buf, size_t count)
@@ -110,10 +191,16 @@ static char* get_default_socket_path(void)
 
 static ssize_t internal_aerospace_send(aerospace* client, cJSON* query)
 {
-	if (!aerospace_is_initialized(client)) {
-		errno = EBADF;
-		fatal_error("%s", ERROR_SOCKET_NOT_CONN);
+	if (aerospace_ensure_connection(client) != 0) {
+		if (client && client->auto_reconnect_enabled) {
+			cJSON_Delete(query);
+			fatal_error("%s", ERROR_MAX_RECONNECT);
+		} else {
+			cJSON_Delete(query);
+			fatal_error("%s", ERROR_SOCKET_NOT_CONN);
+		}
 	}
+
 	if (!query) {
 		errno = EINVAL;
 		fatal_error("internal_aerospace_send: query object is NULL");
@@ -138,6 +225,29 @@ static ssize_t internal_aerospace_send(aerospace* client, cJSON* query)
 	int write_errno = errno;
 	free(send_buf);
 
+	if (bytes_sent < 0 && client->auto_reconnect_enabled && is_connection_error(write_errno)) {
+		client->fd = -1;
+		if (aerospace_ensure_connection(client) == 0) {
+			char* retry_json_str = cJSON_PrintUnformatted(query);
+			if (retry_json_str) {
+				size_t retry_len = strlen(retry_json_str);
+				size_t retry_total_len = retry_len + 1;
+				char* retry_send_buf = malloc(retry_total_len + 1);
+				snprintf(retry_send_buf, retry_total_len + 1, "%s\n", retry_json_str);
+				free(retry_json_str);
+
+				errno = 0;
+				bytes_sent = write_all(client->fd, retry_send_buf, retry_total_len);
+				write_errno = errno;
+				free(retry_send_buf);
+
+				if (bytes_sent >= 0) {
+					total_len = retry_total_len;
+				}
+			}
+		}
+	}
+
 	if (bytes_sent < 0) {
 		errno = write_errno;
 		fatal_error("%s", ERROR_SOCKET_SEND);
@@ -152,13 +262,25 @@ static ssize_t internal_aerospace_send(aerospace* client, cJSON* query)
 
 static char* internal_aerospace_receive(aerospace* client, size_t maxBytes)
 {
-	if (!aerospace_is_initialized(client)) {
-		errno = EBADF;
-		fatal_error("%s", ERROR_SOCKET_NOT_CONN);
+	if (aerospace_ensure_connection(client) != 0) {
+		if (client && client->auto_reconnect_enabled) {
+			fatal_error("%s", ERROR_MAX_RECONNECT);
+		} else {
+			fatal_error("%s", ERROR_SOCKET_NOT_CONN);
+		}
 	}
 
 	char* buffer = malloc(maxBytes + 1);
 	ssize_t bytes_read = read(client->fd, buffer, maxBytes);
+
+	if (bytes_read < 0 && client->auto_reconnect_enabled && is_connection_error(errno)) {
+		free(buffer);
+		client->fd = -1;
+		if (aerospace_ensure_connection(client) == 0) {
+			buffer = malloc(maxBytes + 1);
+			bytes_read = read(client->fd, buffer, maxBytes);
+		}
+	}
 
 	if (bytes_read < 0) {
 		int read_errno = errno;
@@ -168,7 +290,6 @@ static char* internal_aerospace_receive(aerospace* client, size_t maxBytes)
 	}
 
 	buffer[bytes_read] = '\0';
-
 	return buffer;
 }
 
@@ -276,6 +397,9 @@ aerospace* aerospace_new(const char* socketPath)
 {
 	aerospace* client = malloc(sizeof(aerospace));
 	client->fd = -1;
+	client->auto_reconnect_enabled = true;
+	client->max_reconnect_attempts = MAX_RECONNECT_ATTEMPTS;
+	client->reconnect_delay_ms = RECONNECT_DELAY_MS;
 
 	if (socketPath)
 		client->socket_path = strdup(socketPath);
@@ -306,9 +430,6 @@ aerospace* aerospace_new(const char* socketPath)
 		free(client);
 		errno = connect_errno;
 		fatal_error(ERROR_SOCKET_CONNECT_FMT, failed_path);
-		// Note: failed_path memory is leaked here because fatal_error exits.
-		// If this were not fatal, we would need:
-		// free(failed_path);
 	}
 
 	return client;
@@ -332,6 +453,28 @@ void aerospace_close(aerospace* client)
 		free(client->socket_path);
 		client->socket_path = NULL;
 		free(client);
+	}
+}
+
+void aerospace_reconnect(aerospace* client)
+{
+	if (aerospace_reconnect_internal(client) != 0) {
+		fatal_error(ERROR_SOCKET_CONNECT_FMT, client->socket_path);
+	}
+}
+
+void aerospace_set_auto_reconnect(aerospace* client, bool enabled)
+{
+	if (client) {
+		client->auto_reconnect_enabled = enabled;
+	}
+}
+
+void aerospace_set_reconnect_params(aerospace* client, int max_attempts, int delay_ms)
+{
+	if (client) {
+		client->max_reconnect_attempts = max_attempts > 0 ? max_attempts : MAX_RECONNECT_ATTEMPTS;
+		client->reconnect_delay_ms = delay_ms > 0 ? delay_ms : RECONNECT_DELAY_MS;
 	}
 }
 
