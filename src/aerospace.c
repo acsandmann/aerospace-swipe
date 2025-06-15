@@ -14,7 +14,6 @@
 
 #define DEFAULT_MAX_BUFFER_SIZE 2048
 
-static const char* ERROR_MEM_ALLOC = "Memory allocation failed";
 static const char* ERROR_SOCKET_CREATE = "Failed to create Unix domain socket";
 static const char* ERROR_SOCKET_CONNECT_FMT = "Failed to connect to socket at %s";
 static const char* ERROR_SOCKET_SEND = "Failed to send data through socket";
@@ -24,7 +23,6 @@ static const char* ERROR_SOCKET_NOT_CONN = "Socket is not connected";
 static const char* ERROR_JSON_CREATE = "Failed to create JSON object/array";
 static const char* ERROR_JSON_PRINT = "Failed to print JSON to string";
 static const char* ERROR_JSON_DECODE = "Failed to decode JSON response";
-static const char* ERROR_USER_INFO = "Unable to determine user information for default socket path";
 static const char* ERROR_RESPONSE_FORMAT = "Response does not contain valid %s field";
 
 struct aerospace {

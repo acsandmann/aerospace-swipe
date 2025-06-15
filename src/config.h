@@ -14,10 +14,13 @@ typedef struct {
 	bool haptic;
 	bool skip_empty;
 	int fingers;
-	float swipe_cooldown;
-	float swipe_threshold; // distance
-	float velocity_swipe_threshold; // velocity
-	int velocity_frames_threshold; // distance
+	float distance_pct; // distance
+	float velocity_pct; // velocity
+	float settle_factor;
+	float min_step;
+	float min_travel;
+	float min_step_fast;
+	float min_travel_fast;
 	const char* swipe_left;
 	const char* swipe_right;
 } Config;
@@ -30,10 +33,13 @@ static Config default_config()
 	config.haptic = false;
 	config.skip_empty = true;
 	config.fingers = 3;
-	config.swipe_cooldown = 0.3f;
-	config.swipe_threshold = 0.15f;
-	config.velocity_swipe_threshold = 0.75f;
-	config.velocity_frames_threshold = 2;
+	config.distance_pct = 0.12f; // ≥12 % travel triggers
+	config.velocity_pct = 0.50f; // ≥0.50 × w pts / s triggers
+	config.settle_factor = 0.15f; // ≤15 % of flick speed -> flick ended
+	config.min_step = 0.005f;
+	config.min_travel = 0.015f;
+	config.min_step_fast = 0.0f;
+	config.min_travel_fast = 0.006f;
 	config.swipe_left = "prev";
 	config.swipe_right = "next";
 	return config;
@@ -119,21 +125,17 @@ static Config load_config()
 	if (cJSON_IsNumber(item))
 		config.fingers = item->valueint;
 
-	item = cJSON_GetObjectItem(root, "swipe_cooldown");
+	item = cJSON_GetObjectItem(root, "distance_pct");
 	if (cJSON_IsNumber(item))
-		config.swipe_cooldown = (float)item->valuedouble;
+		config.distance_pct = (float)item->valuedouble;
 
-	item = cJSON_GetObjectItem(root, "swipe_threshold");
+	item = cJSON_GetObjectItem(root, "velocity_pct");
 	if (cJSON_IsNumber(item))
-		config.swipe_threshold = (float)item->valuedouble;
+		config.velocity_pct = (float)item->valuedouble;
 
-	item = cJSON_GetObjectItem(root, "velocity_swipe_threshold");
+	item = cJSON_GetObjectItem(root, "settle_factor");
 	if (cJSON_IsNumber(item))
-		config.velocity_swipe_threshold = (float)item->valuedouble;
-
-	item = cJSON_GetObjectItem(root, "velocity_frames_threshold");
-	if (cJSON_IsNumber(item))
-		config.velocity_frames_threshold = item->valueint;
+		config.settle_factor = (float)item->valuedouble;
 
 	config.swipe_left = config.natural_swipe ? "next" : "prev";
 	config.swipe_right = config.natural_swipe ? "prev" : "next";
