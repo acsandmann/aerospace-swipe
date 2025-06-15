@@ -17,6 +17,10 @@ typedef struct {
 	float distance_pct; // distance
 	float velocity_pct; // velocity
 	float settle_factor;
+	float min_step;
+	float min_travel;
+	float min_step_fast;
+	float min_travel_fast;
 	const char* swipe_left;
 	const char* swipe_right;
 } Config;
@@ -32,6 +36,10 @@ static Config default_config()
 	config.distance_pct = 0.12f; // ≥12 % travel triggers
 	config.velocity_pct = 0.50f; // ≥0.50 × w pts / s triggers
 	config.settle_factor = 0.15f; // ≤15 % of flick speed -> flick ended
+	config.min_step = 0.005f;
+	config.min_travel = 0.015f;
+	config.min_step_fast = 0.0f;
+	config.min_travel_fast = 0.006f;
 	config.swipe_left = "prev";
 	config.swipe_right = "next";
 	return config;

@@ -45,11 +45,7 @@ static void switch_workspace(const char* ws)
 
 #define ACTIVATE_PCT 0.05f
 #define END_PHASE 8 // NSTouchPhaseEnded
-#define MIN_STEP 0.005f
-#define MIN_FINGER_TRAVEL 0.015f
 #define FAST_VEL_FACTOR 0.80f
-#define MIN_STEP_FAST 0.0f
-#define MIN_TRAVEL_FAST 0.006f
 #define MAX_TOUCHES 16
 
 static void gestureCallback(touch* c, int n)
@@ -95,7 +91,7 @@ static void gestureCallback(touch* c, int n)
 		vx /= n;
 
 		float dx = ax - startX;
-		if ((dx * lastFireDir) < 0 && fabsf(dx) >= MIN_FINGER_TRAVEL) {
+		if ((dx * lastFireDir) < 0 && fabsf(dx) >= g_config.min_travel) {
 			state = GS_ARMED;
 			startX = ax;
 			startY = ay;
@@ -135,7 +131,7 @@ static void gestureCallback(touch* c, int n)
 
 	if (state == GS_IDLE) {
 		bool fast = fabsf(vx) >= g_config.velocity_pct * FAST_VEL_FACTOR;
-		float need = fast ? MIN_TRAVEL_FAST : MIN_FINGER_TRAVEL;
+		float need = fast ? g_config.min_travel_fast : g_config.min_travel;
 		bool moved = true;
 		for (int i = 0; i < n && moved; ++i)
 			moved &= fabsf(c[i].x - base_x[i]) >= need;
@@ -158,7 +154,7 @@ static void gestureCallback(touch* c, int n)
 	}
 
 	bool fast = fabsf(vx) >= g_config.velocity_pct * FAST_VEL_FACTOR;
-	float stepReq = fast ? MIN_STEP_FAST : MIN_STEP;
+	float stepReq = fast ? g_config.min_step_fast : g_config.min_step;
 	for (int i = 0; i < n; ++i) {
 		float ddx = c[i].x - prev_x[i];
 		if (fabsf(ddx) < stepReq || (ddx * dx) < 0) {
@@ -193,7 +189,7 @@ typedef struct {
 	bool isPalm, seen;
 } FingerTrack;
 
-static CFMutableDictionaryRef gTracks;
+static CFMutableDictionaryRef g_tracks;
 static const CGFloat PALM_STEP   = 0.05;   // 5 % pad / frame
 static const CGFloat PALM_DISP   = 0.025;    // 2.5 % pad from origin
 static const CFTimeInterval PALM_AGE = 0.06; // 60 ms before we judge
@@ -201,19 +197,19 @@ static const CGFloat PALM_VELOCITY = 0.1;    // 10% of pad dimension per second
 
 static void update_tracks(NSSet<NSTouch*> *touches, CFTimeInterval now)
 {
-    for (id k in (__bridge NSDictionary*)gTracks)
-        ((FingerTrack *)CFDictionaryGetValue(gTracks, (__bridge const void*)k))->seen = false;
+    for (id k in (__bridge NSDictionary*)g_tracks)
+        ((FingerTrack *)CFDictionaryGetValue(g_tracks, (__bridge const void*)k))->seen = false;
 
     for (NSTouch *t in touches) {
         const void *key = (__bridge const void*)t.identity;
-        FingerTrack *trk = (FingerTrack *)CFDictionaryGetValue(gTracks, key);
+        FingerTrack *trk = (FingerTrack *)CFDictionaryGetValue(g_tracks, key);
         CGPoint p = t.normalizedPosition;
 
         if (!trk) {
             trk = calloc(1, sizeof *trk);
             trk->start = trk->last = p;
             trk->tStart = trk->tLast = now;
-            CFDictionarySetValue(gTracks, key, trk);
+            CFDictionarySetValue(g_tracks, key, trk);
         }
 
         CFTimeInterval dt = now - trk->tLast;
@@ -239,13 +235,13 @@ static void update_tracks(NSSet<NSTouch*> *touches, CFTimeInterval now)
     }
 
     NSMutableArray *dead = [NSMutableArray array];
-    for (id k in (__bridge NSDictionary*)gTracks)
-        if (!((FingerTrack*)CFDictionaryGetValue(gTracks, (__bridge const void*)k))->seen)
+    for (id k in (__bridge NSDictionary*)g_tracks)
+        if (!((FingerTrack*)CFDictionaryGetValue(g_tracks, (__bridge const void*)k))->seen)
             [dead addObject:k];
 
     for (id k in dead) {
-        free(CFDictionaryGetValue(gTracks, (__bridge const void*)k));
-        CFDictionaryRemoveValue(gTracks, (__bridge const void*)k);
+        free(CFDictionaryGetValue(g_tracks, (__bridge const void*)k));
+        CFDictionaryRemoveValue(g_tracks, (__bridge const void*)k);
     }
 }
 
@@ -276,7 +272,7 @@ static CGEventRef key_handler(CGEventTapProxy proxy, CGEventType type,
 
 	NSUInteger live = 0;
 	for (NSTouch* t in touches) {
-		FingerTrack* trk = CFDictionaryGetValue(gTracks, (__bridge const void*)t.identity);
+		FingerTrack* trk = CFDictionaryGetValue(g_tracks, (__bridge const void*)t.identity);
 		if (trk && !trk->isPalm)
 			++live;
 	}
@@ -286,7 +282,7 @@ static CGEventRef key_handler(CGEventTapProxy proxy, CGEventType type,
 	touch* buf = malloc(sizeof(touch) * live);
 	NSUInteger i = 0;
 	for (NSTouch* t in touches) {
-		FingerTrack* trk = CFDictionaryGetValue(gTracks, (__bridge const void*)t.identity);
+		FingerTrack* trk = CFDictionaryGetValue(g_tracks, (__bridge const void*)t.identity);
 		if (trk && !trk->isPalm)
 			buf[i++] = [TouchConverter convert_nstouch:t];
 	}
@@ -384,7 +380,7 @@ int main(int argc, const char* argv[])
 			exit(EXIT_FAILURE);
 		}
 
-		gTracks = CFDictionaryCreateMutable(NULL, 0,
+		g_tracks = CFDictionaryCreateMutable(NULL, 0,
 			&kCFTypeDictionaryKeyCallBacks, // retain keys
 			NULL); // leave values alone
 
