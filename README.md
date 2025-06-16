@@ -28,7 +28,11 @@ config file is optional and only needed if you want to change the default settin
 ```
 
 ## installation
-
+### script
+```bash
+curl -sSL https://raw.githubusercontent.com/acsandmann/aerospace-swipe/main/install.sh | bash
+```
+### manual
    ```bash
    git clone https://github.com/acsandmann/aerospace-swipe.git
    cd aerospace-swipe
@@ -36,7 +40,11 @@ config file is optional and only needed if you want to change the default settin
    make install # installs a launchd service
    ```
 ## uninstallation
-
-   ```bash
-   make uninstall
-   ```
+### script
+```bash
+curl -sSL https://raw.githubusercontent.com/acsandmann/aerospace-swipe/main/uninstall.sh | bash
+```
+### manual
+```bash
+make uninstall
+```
