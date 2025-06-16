@@ -6,7 +6,10 @@
 #include "haptic.h"
 #include <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
+#include <IOKit/IOMessage.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
 #include <pthread.h>
+#include <sys/cdefs.h>
 
 static aerospace* g_aerospace = NULL;
 static CFTypeRef g_haptic = NULL;
@@ -14,6 +17,8 @@ static Config g_config;
 static pthread_mutex_t g_gesture_mutex = PTHREAD_MUTEX_INITIALIZER;
 static gesture_ctx g_gesture_ctx = { 0 };
 static CFMutableDictionaryRef g_tracks = NULL;
+static io_object_t g_sleep_notifier = 0;
+static IONotificationPortRef g_notification_port = NULL;
 
 static const CGFloat PALM_DISP = 0.025; // 2.5% pad from origin
 static const CFTimeInterval PALM_AGE = 0.06; // 60ms before judgment
@@ -45,8 +50,7 @@ static void switch_workspace(const char* ws)
 		free(result);
 	}
 
-	if (g_config.haptic == true)
-		haptic_actuate(g_haptic, 3);
+	if (g_config.haptic == true) haptic_actuate(g_haptic, 3);
 }
 
 static void reset_gesture_state(gesture_ctx* ctx)
@@ -57,19 +61,16 @@ static void reset_gesture_state(gesture_ctx* ctx)
 
 static void fire_gesture(gesture_ctx* ctx, int direction)
 {
-	if (direction == ctx->last_fire_dir)
-		return;
+	if (direction == ctx->last_fire_dir) return;
 
 	ctx->last_fire_dir = direction;
 	ctx->state = GS_COMMITTED;
 
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		switch_workspace(direction > 0 ? g_config.swipe_right : g_config.swipe_left);
-	});
+	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+		^{ switch_workspace(direction > 0 ? g_config.swipe_right : g_config.swipe_left); });
 }
 
-static void calculate_touch_averages(touch* touches, int count,
-	float* avg_x, float* avg_y, float* avg_vel,
+static void calculate_touch_averages(touch* touches, int count, float* avg_x, float* avg_y, float* avg_vel,
 	float* min_x, float* max_x, float* min_y, float* max_y)
 {
 	*avg_x = *avg_y = *avg_vel = 0;
@@ -81,14 +82,10 @@ static void calculate_touch_averages(touch* touches, int count,
 		*avg_y += touches[i].y;
 		*avg_vel += touches[i].velocity;
 
-		if (touches[i].x < *min_x)
-			*min_x = touches[i].x;
-		if (touches[i].x > *max_x)
-			*max_x = touches[i].x;
-		if (touches[i].y < *min_y)
-			*min_y = touches[i].y;
-		if (touches[i].y > *max_y)
-			*max_y = touches[i].y;
+		if (touches[i].x < *min_x) *min_x = touches[i].x;
+		if (touches[i].x > *max_x) *max_x = touches[i].x;
+		if (touches[i].y < *min_y) *min_y = touches[i].y;
+		if (touches[i].y > *max_y) *max_y = touches[i].y;
 	}
 
 	*avg_x /= count;
@@ -112,8 +109,7 @@ static bool handle_committed_state(gesture_ctx* ctx, touch* touches, int count)
 	}
 
 	float avg_x, avg_y, avg_vel, min_x, max_x, min_y, max_y;
-	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_vel,
-		&min_x, &max_x, &min_y, &max_y);
+	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_vel, &min_x, &max_x, &min_y, &max_y);
 
 	float dx = avg_x - ctx->start_x;
 	if ((dx * ctx->last_fire_dir) < 0 && fabsf(dx) >= g_config.min_travel) {
@@ -123,22 +119,19 @@ static bool handle_committed_state(gesture_ctx* ctx, touch* touches, int count)
 		ctx->peak_velx = avg_vel;
 		ctx->dir = (avg_vel >= 0) ? 1 : -1;
 
-		for (int i = 0; i < count; ++i)
-			ctx->base_x[i] = touches[i].x;
+		for (int i = 0; i < count; ++i) ctx->base_x[i] = touches[i].x;
 	}
 
 	return true;
 }
 
-static void handle_idle_state(gesture_ctx* ctx, touch* touches, int count,
-	float avg_x, float avg_y, float avg_vel)
+static void handle_idle_state(gesture_ctx* ctx, touch* touches, int count, float avg_x, float avg_y, float avg_vel)
 {
 	bool fast = fabsf(avg_vel) >= g_config.velocity_pct * FAST_VEL_FACTOR;
 	float need = fast ? g_config.min_travel_fast : g_config.min_travel;
 
 	bool moved = true;
-	for (int i = 0; i < count && moved; ++i)
-		moved &= fabsf(touches[i].x - ctx->base_x[i]) >= need;
+	for (int i = 0; i < count && moved; ++i) moved &= fabsf(touches[i].x - ctx->base_x[i]) >= need;
 
 	float dx = avg_x - ctx->start_x;
 	float dy = avg_y - ctx->start_y;
@@ -152,13 +145,11 @@ static void handle_idle_state(gesture_ctx* ctx, touch* touches, int count,
 	}
 }
 
-static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count,
-	float avg_x, float avg_y, float avg_vel)
+static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count, float avg_x, float avg_y, float avg_vel)
 {
 	float dx = avg_x - ctx->start_x;
 	float dy = avg_y - ctx->start_y;
 
-	// Reset if vertical movement exceeds horizontal
 	if (fabsf(dy) > fabsf(dx)) {
 		reset_gesture_state(ctx);
 		return;
@@ -194,23 +185,19 @@ static void gestureCallback(touch* touches, int count)
 	gesture_ctx* ctx = &g_gesture_ctx;
 
 	if (ctx->state == GS_COMMITTED) {
-		if (handle_committed_state(ctx, touches, count))
-			goto unlock;
+		if (handle_committed_state(ctx, touches, count)) goto unlock;
 	}
 
 	if (count != g_config.fingers) {
-		if (ctx->state == GS_ARMED)
-			ctx->state = GS_IDLE;
+		if (ctx->state == GS_ARMED) ctx->state = GS_IDLE;
 
-		for (int i = 0; i < count; ++i)
-			ctx->prev_x[i] = ctx->base_x[i] = touches[i].x;
+		for (int i = 0; i < count; ++i) ctx->prev_x[i] = ctx->base_x[i] = touches[i].x;
 
 		goto unlock;
 	}
 
 	float avg_x, avg_y, avg_vel, min_x, max_x, min_y, max_y;
-	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_vel,
-		&min_x, &max_x, &min_y, &max_y);
+	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_vel, &min_x, &max_x, &min_y, &max_y);
 
 	if (ctx->state == GS_IDLE) {
 		handle_idle_state(ctx, touches, count, avg_x, avg_y, avg_vel);
@@ -220,8 +207,7 @@ static void gestureCallback(touch* touches, int count)
 
 	for (int i = 0; i < count; ++i) {
 		ctx->prev_x[i] = touches[i].x;
-		if (ctx->state == GS_IDLE)
-			ctx->base_x[i] = touches[i].x;
+		if (ctx->state == GS_IDLE) ctx->base_x[i] = touches[i].x;
 	}
 
 unlock:
@@ -262,8 +248,7 @@ static void update_or_create_track(NSTouch* touch, CFTimeInterval now)
 		bool trivialDisp = disp < PALM_DISP;
 		bool slowEnough = vel < PALM_VELOCITY;
 
-		if (agedEnough && trivialDisp && slowEnough)
-			trk->is_palm = true;
+		if (agedEnough && trivialDisp && slowEnough) trk->is_palm = true;
 	}
 
 	trk->seen = true;
@@ -275,8 +260,7 @@ static void remove_unseen_tracks(void)
 
 	for (id k in (__bridge NSDictionary*)g_tracks) {
 		finger_track* trk = (finger_track*)CFDictionaryGetValue(g_tracks, (__bridge const void*)k);
-		if (!trk->seen)
-			[dead addObject:k];
+		if (!trk->seen) [dead addObject:k];
 	}
 
 	for (id k in dead) {
@@ -289,9 +273,7 @@ static void update_tracks(NSSet<NSTouch*>* touches, CFTimeInterval now)
 {
 	mark_all_tracks_unseen();
 
-	for (NSTouch* touch in touches) {
-		update_or_create_track(touch, now);
-	}
+	for (NSTouch* touch in touches) { update_or_create_track(touch, now); }
 
 	remove_unseen_tracks();
 }
@@ -301,8 +283,7 @@ static NSUInteger count_live_touches(NSSet<NSTouch*>* touches)
 	NSUInteger live = 0;
 	for (NSTouch* touch in touches) {
 		finger_track* trk = CFDictionaryGetValue(g_tracks, (__bridge const void*)touch.identity);
-		if (trk && !trk->is_palm)
-			++live;
+		if (trk && !trk->is_palm) ++live;
 	}
 	return live;
 }
@@ -314,8 +295,7 @@ static void process_live_touches(NSSet<NSTouch*>* touches, NSUInteger live_count
 
 	for (NSTouch* touch in touches) {
 		finger_track* trk = CFDictionaryGetValue(g_tracks, (__bridge const void*)touch.identity);
-		if (trk && !trk->is_palm)
-			buf[i++] = [TouchConverter convert_nstouch:touch];
+		if (trk && !trk->is_palm) buf[i++] = [TouchConverter convert_nstouch:touch];
 	}
 
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -324,8 +304,7 @@ static void process_live_touches(NSSet<NSTouch*>* touches, NSUInteger live_count
 	});
 }
 
-static CGEventRef key_handler(__unused CGEventTapProxy proxy, CGEventType type,
-	CGEventRef event, void* ref)
+static CGEventRef key_handler(__unused CGEventTapProxy proxy, CGEventType type, CGEventRef event, void* ref)
 {
 	struct event_tap* event_tap_ref = (struct event_tap*)ref;
 
@@ -341,20 +320,17 @@ static CGEventRef key_handler(__unused CGEventTapProxy proxy, CGEventType type,
 		return event;
 	}
 
-	if (type != NSEventTypeGesture)
-		return event;
+	if (type != NSEventTypeGesture) return event;
 
 	NSEvent* ev = [NSEvent eventWithCGEvent:event];
 	NSSet<NSTouch*>* touches = ev.allTouches;
 
-	if (!touches.count)
-		return event;
+	if (!touches.count) return event;
 
 	update_tracks(touches, ev.timestamp);
 
 	NSUInteger live_count = count_live_touches(touches);
-	if (!live_count)
-		return event;
+	if (!live_count) return event;
 
 	process_live_touches(touches, live_count);
 
@@ -364,8 +340,7 @@ static CGEventRef key_handler(__unused CGEventTapProxy proxy, CGEventType type,
 static void acquire_lockfile(void)
 {
 	char* user = getenv("USER");
-	if (!user)
-		printf("Error: User variable not set.\n"), exit(1);
+	if (!user) printf("Error: User variable not set.\n"), exit(1);
 
 	char buffer[256];
 	snprintf(buffer, 256, "/tmp/aerospace-swipe-%s.lock", user);
@@ -376,13 +351,7 @@ static void acquire_lockfile(void)
 		exit(1);
 	}
 
-	struct flock lockfd = {
-		.l_start = 0,
-		.l_len = 0,
-		.l_pid = getpid(),
-		.l_type = F_WRLCK,
-		.l_whence = SEEK_SET
-	};
+	struct flock lockfd = { .l_start = 0, .l_len = 0, .l_pid = getpid(), .l_type = F_WRLCK, .l_whence = SEEK_SET };
 
 	if (fcntl(handle, F_SETLK, &lockfd) == -1) {
 		printf("Error: Could not acquire lock-file.\naerospace-swipe already running?\n");
@@ -400,8 +369,57 @@ void waitForAccessibilityAndRestart(void)
 	NSLog(@"Accessibility permission granted. Restarting app...");
 
 	NSString* bundlePath = [[NSBundle mainBundle] bundlePath];
-	[[NSWorkspace sharedWorkspace] openApplicationAtURL:[NSURL fileURLWithPath:bundlePath] configuration:[NSWorkspaceOpenConfiguration configuration] completionHandler:nil];
+	[[NSWorkspace sharedWorkspace] openApplicationAtURL:[NSURL fileURLWithPath:bundlePath]
+										  configuration:[NSWorkspaceOpenConfiguration configuration]
+									  completionHandler:nil];
 	exit(0);
+}
+
+static void sleep_callback(__unused void* refCon, io_service_t service, natural_t messageType, void* messageArgument)
+{
+	switch (messageType) {
+	case kIOMessageSystemWillSleep:
+		NSLog(@"System going to sleep, cleaning up state");
+		pthread_mutex_lock(&g_gesture_mutex);
+		reset_gesture_state(&g_gesture_ctx);
+
+		for (id k in (__bridge NSDictionary*)g_tracks) {
+			free(CFDictionaryGetValue(g_tracks, (__bridge const void*)k));
+		}
+		CFDictionaryRemoveAllValues(g_tracks);
+
+		pthread_mutex_unlock(&g_gesture_mutex);
+		break;
+
+	case kIOMessageSystemHasPoweredOn:
+		NSLog(@"System woke up, reinitializing event tap");
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+			dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+				if (g_event_tap.handle) { CGEventTapEnable(g_event_tap.handle, true); }
+
+				aerospace_reconnect(g_aerospace);
+			});
+		break;
+	}
+
+	if (messageType == kIOMessageSystemWillSleep) { IOAllowPowerChange(service, (long)messageArgument); }
+}
+
+static void register_sleep(void)
+{
+	g_notification_port = IONotificationPortCreate(kIOMainPortDefault);
+
+	CFRunLoopSourceRef runLoopSource = IONotificationPortGetRunLoopSource(g_notification_port);
+	CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopDefaultMode);
+
+	io_service_t rootDomainService
+		= IORegistryEntryFromPath(kIOMainPortDefault, kIOPowerPlane ":/IOPowerConnection/IOPMrootDomain");
+
+	IOServiceAddInterestNotification(
+		g_notification_port, rootDomainService, kIOGeneralInterest, sleep_callback, NULL, &g_sleep_notifier);
+
+	IOObjectRelease(rootDomainService);
+	NSLog(@"Sleep/wake notifications registered");
 }
 
 int main(int argc, const char* argv[])
@@ -418,9 +436,8 @@ int main(int argc, const char* argv[])
 			NSLog(@"Accessibility permission not granted. Prompting user...");
 			AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
 
-			dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-				waitForAccessibilityAndRestart();
-			});
+			dispatch_async(
+				dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ waitForAccessibilityAndRestart(); });
 
 			CFRunLoopRun();
 		}
@@ -429,12 +446,8 @@ int main(int argc, const char* argv[])
 
 		g_config = load_config();
 		NSLog(@"Loaded config: fingers=%d, skip_empty=%s, wrap_around=%s, haptic=%s, swipe_left='%s', swipe_right='%s'",
-			g_config.fingers,
-			g_config.skip_empty ? "YES" : "NO",
-			g_config.wrap_around ? "YES" : "NO",
-			g_config.haptic ? "YES" : "NO",
-			g_config.swipe_left,
-			g_config.swipe_right);
+			g_config.fingers, g_config.skip_empty ? "YES" : "NO", g_config.wrap_around ? "YES" : "NO",
+			g_config.haptic ? "YES" : "NO", g_config.swipe_left, g_config.swipe_right);
 
 		g_aerospace = aerospace_new(NULL);
 		if (!g_aerospace) {
@@ -448,11 +461,11 @@ int main(int argc, const char* argv[])
 			exit(EXIT_FAILURE);
 		}
 
-		g_tracks = CFDictionaryCreateMutable(NULL, 0,
-			&kCFTypeDictionaryKeyCallBacks,
-			NULL);
+		g_tracks = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, NULL);
 
 		event_tap_begin(&g_event_tap, key_handler);
+
+		register_sleep();
 
 		return NSApplicationMain(argc, argv);
 	}

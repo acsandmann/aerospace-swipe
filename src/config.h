@@ -48,8 +48,7 @@ static Config default_config()
 static int read_file_to_buffer(const char* path, char** out)
 {
 	FILE* file = fopen(path, "rb");
-	if (!file)
-		return 0;
+	if (!file) return 0;
 
 	struct stat st;
 	if (stat(path, &st) != 0) {
@@ -79,8 +78,7 @@ static Config load_config()
 	char fallback_path[512];
 	struct passwd* pw = getpwuid(getuid());
 	if (pw) {
-		snprintf(fallback_path, sizeof(fallback_path),
-			"%s/.config/aerospace-swipe/config.json", pw->pw_dir);
+		snprintf(fallback_path, sizeof(fallback_path), "%s/.config/aerospace-swipe/config.json", pw->pw_dir);
 		paths[1] = fallback_path;
 	}
 
@@ -106,36 +104,28 @@ static Config load_config()
 	cJSON* item;
 
 	item = cJSON_GetObjectItem(root, "natural_swipe");
-	if (cJSON_IsBool(item))
-		config.natural_swipe = cJSON_IsTrue(item);
+	if (cJSON_IsBool(item)) config.natural_swipe = cJSON_IsTrue(item);
 
 	item = cJSON_GetObjectItem(root, "wrap_around");
-	if (cJSON_IsBool(item))
-		config.wrap_around = cJSON_IsTrue(item);
+	if (cJSON_IsBool(item)) config.wrap_around = cJSON_IsTrue(item);
 
 	item = cJSON_GetObjectItem(root, "haptic");
-	if (cJSON_IsBool(item))
-		config.haptic = cJSON_IsTrue(item);
+	if (cJSON_IsBool(item)) config.haptic = cJSON_IsTrue(item);
 
 	item = cJSON_GetObjectItem(root, "skip_empty");
-	if (cJSON_IsBool(item))
-		config.skip_empty = cJSON_IsTrue(item);
+	if (cJSON_IsBool(item)) config.skip_empty = cJSON_IsTrue(item);
 
 	item = cJSON_GetObjectItem(root, "fingers");
-	if (cJSON_IsNumber(item))
-		config.fingers = item->valueint;
+	if (cJSON_IsNumber(item)) config.fingers = item->valueint;
 
 	item = cJSON_GetObjectItem(root, "distance_pct");
-	if (cJSON_IsNumber(item))
-		config.distance_pct = (float)item->valuedouble;
+	if (cJSON_IsNumber(item)) config.distance_pct = (float)item->valuedouble;
 
 	item = cJSON_GetObjectItem(root, "velocity_pct");
-	if (cJSON_IsNumber(item))
-		config.velocity_pct = (float)item->valuedouble;
+	if (cJSON_IsNumber(item)) config.velocity_pct = (float)item->valuedouble;
 
 	item = cJSON_GetObjectItem(root, "settle_factor");
-	if (cJSON_IsNumber(item))
-		config.settle_factor = (float)item->valuedouble;
+	if (cJSON_IsNumber(item)) config.settle_factor = (float)item->valuedouble;
 
 	config.swipe_left = config.natural_swipe ? "next" : "prev";
 	config.swipe_right = config.natural_swipe ? "prev" : "next";
