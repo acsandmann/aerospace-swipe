@@ -36,11 +36,7 @@ typedef struct {
 } touch_state;
 
 // Gesture state enumeration
-typedef enum {
-	GS_IDLE,
-	GS_ARMED,
-	GS_COMMITTED
-} gesture_state;
+typedef enum { GS_IDLE, GS_ARMED, GS_COMMITTED } gesture_state;
 
 // Gesture context structure
 typedef struct {
@@ -66,5 +62,6 @@ struct event_tap g_event_tap;
 static CFMutableDictionaryRef touchStates;
 
 bool event_tap_enabled(struct event_tap* event_tap);
-bool event_tap_begin(struct event_tap* event_tap, CGEventRef (*reference)(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void* userdata));
+bool event_tap_begin(struct event_tap* event_tap,
+	CGEventRef (*reference)(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void* userdata));
 void event_tap_end(struct event_tap* event_tap);

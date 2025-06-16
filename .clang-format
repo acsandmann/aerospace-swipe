@@ -2,6 +2,10 @@
 BasedOnStyle: WebKit
 TabWidth: '4'
 UseTab: Always
-
+ColumnLimit: 120
+AllowShortIfStatementsOnASingleLine: true
+AllowShortLoopsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: All
+AllowShortBlocksOnASingleLine: Always
+AllowShortCaseLabelsOnASingleLine: true
 ...
-
