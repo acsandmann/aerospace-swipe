@@ -1,0 +1,251 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build application
+        run: |
+          make bundle
+
+      - name: Verify build output
+        run: |
+          if [ ! -d "AerospaceSwipe.app" ]; then
+            echo "Error: AerospaceSwipe.app not found after build"
+            ls -la
+            exit 1
+          fi
+          echo "Build verification successful"
+
+      - name: Remove quarantine attributes
+        run: |
+          echo "Removing quarantine attributes from the app..."
+          xattr -cr AerospaceSwipe.app
+          echo "Quarantine attributes removed"
+
+      - name: Create release packages
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "Creating packages for version: $VERSION"
+          mkdir -p release
+
+          # Create ZIP package (for Homebrew and direct download)
+          cd release
+          ditto -c -k --sequesterRsrc --keepParent ../AerospaceSwipe.app "AerospaceSwipe-${VERSION}.zip"
+          echo "ZIP package created: AerospaceSwipe-${VERSION}.zip"
+
+          # Create DMG package with proper setup
+          cd ..
+          mkdir -p dmg-staging
+          cp -R AerospaceSwipe.app dmg-staging/
+
+          # Remove quarantine attributes from the staged app
+          xattr -cr dmg-staging/AerospaceSwipe.app
+
+          # Create Applications symlink for easy installation
+          ln -s /Applications dmg-staging/Applications
+
+          # Create a temporary DMG
+          hdiutil create -volname "AerospaceSwipe ${VERSION}" \
+            -srcfolder dmg-staging \
+            -ov -format UDRW \
+            -size 100m \
+            "temp-AerospaceSwipe-${VERSION}.dmg"
+
+          # Mount the DMG to customize it
+          MOUNT_DIR=$(mktemp -d)
+          hdiutil attach "temp-AerospaceSwipe-${VERSION}.dmg" -mountpoint "$MOUNT_DIR" -nobrowse
+
+          # Remove quarantine attributes from mounted contents
+          xattr -cr "$MOUNT_DIR/AerospaceSwipe.app" 2>/dev/null || true
+
+          # Unmount the DMG
+          hdiutil detach "$MOUNT_DIR"
+
+          # Convert to final compressed DMG
+          hdiutil convert "temp-AerospaceSwipe-${VERSION}.dmg" \
+            -format UDZO \
+            -o "release/AerospaceSwipe-${VERSION}.dmg"
+
+          # Clean up
+          rm "temp-AerospaceSwipe-${VERSION}.dmg"
+          rm -rf dmg-staging
+
+          echo "DMG package created: AerospaceSwipe-${VERSION}.dmg"
+
+          cd release
+          ls -la
+
+      - name: Calculate checksums
+        id: checksums
+        run: |
+          cd release
+
+          # Calculate SHA256 for ZIP
+          ZIP_FILE=$(ls AerospaceSwipe-*.zip | head -1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Error: No zip file found"
+            exit 1
+          fi
+          ZIP_SHA256=$(shasum -a 256 "$ZIP_FILE" | cut -d' ' -f1)
+          echo "ZIP SHA256: $ZIP_SHA256"
+          echo "zip_sha256=$ZIP_SHA256" >> $GITHUB_OUTPUT
+          echo "zip_file=$ZIP_FILE" >> $GITHUB_OUTPUT
+
+          # Calculate SHA256 for DMG
+          DMG_FILE=$(ls AerospaceSwipe-*.dmg | head -1)
+          if [ -z "$DMG_FILE" ]; then
+            echo "Error: No dmg file found"
+            exit 1
+          fi
+          DMG_SHA256=$(shasum -a 256 "$DMG_FILE" | cut -d' ' -f1)
+          echo "DMG SHA256: $DMG_SHA256"
+          echo "dmg_sha256=$DMG_SHA256" >> $GITHUB_OUTPUT
+          echo "dmg_file=$DMG_FILE" >> $GITHUB_OUTPUT
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/AerospaceSwipe-*.zip
+            release/AerospaceSwipe-*.dmg
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          body: |
+            ## Installation Options
+
+            ### Option 1: Homebrew (Recommended)
+            ```bash
+            brew tap acsandmann/tap
+            brew install --cask aerospace-swipe
+            ```
+
+            ### Option 2: Direct Download
+            - **DMG**: Download `AerospaceSwipe-${{ steps.version.outputs.version }}.dmg` and drag to Applications
+            - **ZIP**: Download `AerospaceSwipe-${{ steps.version.outputs.version }}.zip` for manual installation
+
+            ### Installation Notes
+            If you see a security warning when opening the app:
+            1. Right-click the app and select "Open"
+            2. Or go to System Preferences → Security & Privacy → General and click "Open Anyway"
+            3. Or run: `xattr -d com.apple.quarantine /Applications/AerospaceSwipe.app`
+
+            ### Checksums
+            - DMG SHA256: `${{ steps.checksums.outputs.dmg_sha256 }}`
+            - ZIP SHA256: `${{ steps.checksums.outputs.zip_sha256 }}`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew Cask
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          ZIP_SHA256=${{ steps.checksums.outputs.zip_sha256 }}
+
+          echo "Updating Homebrew cask for version $VERSION with SHA256 $ZIP_SHA256"
+
+          # Clone the homebrew tap repository with token authentication
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/acsandmann/homebrew-tap.git tap
+          cd tap
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create Casks directory if it doesn't exist
+          mkdir -p Casks
+
+          # Create the cask file (keep using ZIP for Homebrew as it's more common)
+          cat > Casks/aerospace-swipe.rb << 'CASK_EOF'
+          cask "aerospace-swipe" do
+            version "VERSION_PLACEHOLDER"
+            sha256 "SHA256_PLACEHOLDER"
+
+            url "https://github.com/acsandmann/aerospace-swipe/releases/download/v#{version}/AerospaceSwipe-#{version}.zip"
+            name "Aerospace Swipe"
+            desc "Trackpad gesture support for AeroSpace window manager"
+            homepage "https://github.com/acsandmann/aerospace-swipe"
+
+            app "AerospaceSwipe.app"
+
+            postflight do
+              launch_agent_plist = "#{Dir.home}/Library/LaunchAgents/com.acsandmann.swipe.plist"
+
+              plist_content = <<~EOS
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                <plist version="1.0">
+                <dict>
+                  <key>Label</key>
+                  <string>com.acsandmann.swipe</string>
+                  <key>ProgramArguments</key>
+                  <array>
+                    <string>/Applications/AerospaceSwipe.app/Contents/MacOS/AerospaceSwipe</string>
+                  </array>
+                  <key>RunAtLoad</key>
+                  <true/>
+                  <key>KeepAlive</key>
+                  <true/>
+                </dict>
+                </plist>
+          EOS
+
+              File.write(launch_agent_plist, plist_content)
+              system "launchctl", "load", launch_agent_plist
+            end
+
+            uninstall_preflight do
+              launch_agent_plist = "#{Dir.home}/Library/LaunchAgents/com.acsandmann.swipe.plist"
+              if File.exist?(launch_agent_plist)
+                system "launchctl", "unload", launch_agent_plist
+                File.delete(launch_agent_plist)
+              end
+            end
+
+            zap trash: [
+              "~/Library/LaunchAgents/com.acsandmann.swipe.plist",
+            ]
+          end
+          CASK_EOF
+
+          # Replace placeholders with actual values
+          sed -i '' "s/VERSION_PLACEHOLDER/$VERSION/g" Casks/aerospace-swipe.rb
+          sed -i '' "s/SHA256_PLACEHOLDER/$ZIP_SHA256/g" Casks/aerospace-swipe.rb
+
+          # Show the changes
+          echo "Updated cask file:"
+          cat Casks/aerospace-swipe.rb
+
+          # Commit and push changes
+          git add Casks/aerospace-swipe.rb
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update aerospace-swipe to $VERSION"
+            git push origin main
+            echo "Successfully updated Homebrew cask"
+          fi
