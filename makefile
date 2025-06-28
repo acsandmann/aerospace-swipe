@@ -8,7 +8,7 @@ LAUNCH_AGENTS_DIR = $(HOME)/Library/LaunchAgents
 PLIST_FILE = com.acsandmann.swipe.plist
 PLIST_TEMPLATE = com.acsandmann.swipe.plist.in
 
-SRC_FILES = src/aerospace.c src/cJSON.c src/haptic.c src/event_tap.m src/main.m
+SRC_FILES = src/aerospace.c src/yyjson.c src/haptic.c src/event_tap.m src/main.m
 
 BINARY = swipe
 BINARY_NAME = AerospaceSwipe

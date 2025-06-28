@@ -1,7 +1,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #define CONFIG_H
 
-#include "cJSON.h"
+#include "yyjson.h"
 #include <pwd.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -52,7 +52,7 @@ static Config default_config()
 	return config;
 }
 
-static int read_file_to_buffer(const char* path, char** out)
+static int read_file_to_buffer(const char* path, char** out, size_t* size)
 {
 	FILE* file = fopen(path, "rb");
 	if (!file)
@@ -63,15 +63,16 @@ static int read_file_to_buffer(const char* path, char** out)
 		fclose(file);
 		return 0;
 	}
+	*size = st.st_size;
 
-	*out = (char*)malloc(st.st_size + 1);
+	*out = (char*)malloc(*size + 1);
 	if (!*out) {
 		fclose(file);
 		return 0;
 	}
 
-	fread(*out, 1, st.st_size, file);
-	(*out)[st.st_size] = '\0';
+	fread(*out, 1, *size, file);
+	(*out)[*size] = '\0';
 	fclose(file);
 	return 1;
 }
@@ -81,6 +82,7 @@ static Config load_config()
 	Config config = default_config();
 
 	char* buffer = NULL;
+	size_t buffer_size = 0;
 	const char* paths[] = { "./config.json", NULL };
 
 	char fallback_path[512];
@@ -92,7 +94,7 @@ static Config load_config()
 	}
 
 	for (int i = 0; i < 2; ++i) {
-		if (paths[i] && read_file_to_buffer(paths[i], &buffer)) {
+		if (paths[i] && read_file_to_buffer(paths[i], &buffer, &buffer_size)) {
 			printf("Loaded config from: %s\n", paths[i]);
 			break;
 		}
@@ -103,50 +105,51 @@ static Config load_config()
 		return config;
 	}
 
-	cJSON* root = cJSON_Parse(buffer);
+	yyjson_doc* doc = yyjson_read(buffer, buffer_size, 0);
 	free(buffer);
-	if (!root) {
+	if (!doc) {
 		fprintf(stderr, "Failed to parse config JSON. Using defaults.\n");
 		return config;
 	}
 
-	cJSON* item;
+	yyjson_val* root = yyjson_doc_get_root(doc);
+	yyjson_val* item;
 
-	item = cJSON_GetObjectItem(root, "natural_swipe");
-	if (cJSON_IsBool(item))
-		config.natural_swipe = cJSON_IsTrue(item);
+	item = yyjson_obj_get(root, "natural_swipe");
+	if (item && yyjson_is_bool(item))
+		config.natural_swipe = yyjson_get_bool(item);
 
-	item = cJSON_GetObjectItem(root, "wrap_around");
-	if (cJSON_IsBool(item))
-		config.wrap_around = cJSON_IsTrue(item);
+	item = yyjson_obj_get(root, "wrap_around");
+	if (item && yyjson_is_bool(item))
+		config.wrap_around = yyjson_get_bool(item);
 
-	item = cJSON_GetObjectItem(root, "haptic");
-	if (cJSON_IsBool(item))
-		config.haptic = cJSON_IsTrue(item);
+	item = yyjson_obj_get(root, "haptic");
+	if (item && yyjson_is_bool(item))
+		config.haptic = yyjson_get_bool(item);
 
-	item = cJSON_GetObjectItem(root, "skip_empty");
-	if (cJSON_IsBool(item))
-		config.skip_empty = cJSON_IsTrue(item);
+	item = yyjson_obj_get(root, "skip_empty");
+	if (item && yyjson_is_bool(item))
+		config.skip_empty = yyjson_get_bool(item);
 
-	item = cJSON_GetObjectItem(root, "fingers");
-	if (cJSON_IsNumber(item))
-		config.fingers = item->valueint;
+	item = yyjson_obj_get(root, "fingers");
+	if (item && yyjson_is_int(item))
+		config.fingers = (int)yyjson_get_int(item);
 
-	item = cJSON_GetObjectItem(root, "distance_pct");
-	if (cJSON_IsNumber(item))
-		config.distance_pct = (float)item->valuedouble;
+	item = yyjson_obj_get(root, "distance_pct");
+	if (item && yyjson_is_real(item))
+		config.distance_pct = (float)yyjson_get_real(item);
 
-	item = cJSON_GetObjectItem(root, "velocity_pct");
-	if (cJSON_IsNumber(item))
-		config.velocity_pct = (float)item->valuedouble;
+	item = yyjson_obj_get(root, "velocity_pct");
+	if (item && yyjson_is_real(item))
+		config.velocity_pct = (float)yyjson_get_real(item);
 
-	item = cJSON_GetObjectItem(root, "settle_factor");
-	if (cJSON_IsNumber(item))
-		config.settle_factor = (float)item->valuedouble;
+	item = yyjson_obj_get(root, "settle_factor");
+	if (item && yyjson_is_real(item))
+		config.settle_factor = (float)yyjson_get_real(item);
 
 	config.swipe_left = config.natural_swipe ? "next" : "prev";
 	config.swipe_right = config.natural_swipe ? "prev" : "next";
 
-	cJSON_Delete(root);
+	yyjson_doc_free(doc);
 	return config;
 }

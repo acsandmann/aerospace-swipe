@@ -6,31 +6,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include "aerospace.h"
-#include "cJSON.h"
+#include "yyjson.h"
 
-#define DEFAULT_MAX_BUFFER_SIZE 4096
+#define READ_BUFFER_SIZE 8192
 
 static const char* ERROR_SOCKET_CREATE = "Failed to create Unix domain socket";
-static const char* ERROR_SOCKET_CONNECT_FMT = "Failed to connect to socket at %s";
-static const char* ERROR_SOCKET_SEND = "Failed to send data through socket";
 static const char* ERROR_SOCKET_RECEIVE = "Failed to receive data from socket";
 static const char* ERROR_SOCKET_CLOSE = "Failed to close socket connection";
-static const char* ERROR_SOCKET_NOT_CONN = "Socket is not connected";
-static const char* ERROR_JSON_CREATE = "Failed to create JSON object/array";
 static const char* ERROR_JSON_PRINT = "Failed to print JSON to string";
-static const char* ERROR_JSON_DECODE = "Failed to decode JSON response";
-static const char* ERROR_RESPONSE_FORMAT = "Response does not contain valid %s field";
 static const char* WARN_CLI_FALLBACK = "Warning: Failed to connect to socket at %s: %s (errno %d). Falling back to CLI.";
 
 struct aerospace {
 	int fd;
 	char* socket_path;
 	bool use_cli_fallback;
+	char read_buf[READ_BUFFER_SIZE];
+	size_t read_buf_len;
 };
 
 static void fatal_error(const char* fmt, ...)
@@ -44,40 +41,6 @@ static void fatal_error(const char* fmt, ...)
 	fprintf(stderr, "\n");
 	va_end(args);
 	exit(EXIT_FAILURE);
-}
-
-static ssize_t write_all(int fd, const char* restrict buf, size_t count)
-{
-	const char* p = buf;
-	size_t remaining = count;
-	while (remaining > 0) {
-		ssize_t ret = write(fd, p, remaining);
-		if (ret < 0) {
-			if (errno == EINTR)
-				continue;
-			return -1;
-		}
-		if (ret == 0) {
-			errno = EPIPE;
-			return -1;
-		}
-		p += ret;
-		remaining -= ret;
-	}
-	return (ssize_t)count;
-}
-
-static cJSON* decode_response(const char* response_str)
-{
-	if (!response_str) {
-		fprintf(stderr, "%s: Input string is NULL\n", ERROR_JSON_DECODE);
-		return NULL;
-	}
-	cJSON* json = cJSON_Parse(response_str);
-	if (!json) {
-		fprintf(stderr, "%s: %s\n", ERROR_JSON_DECODE, cJSON_GetErrorPtr());
-	}
-	return json;
 }
 
 static char* get_default_socket_path(void)
@@ -118,31 +81,14 @@ static char* execute_cli_command(const char* command_string)
 		fatal_error("popen() failed for command '%s'", command_string);
 	}
 
-	size_t capacity = DEFAULT_MAX_BUFFER_SIZE;
-	char* output = malloc(capacity + 1);
+	char* output = malloc(READ_BUFFER_SIZE + 1);
 	if (!output) {
 		pclose(pipe);
 		fatal_error("Failed to allocate buffer for CLI output");
 	}
 
-	size_t total_read = 0;
-	size_t nread;
-
-	while ((nread = fread(output + total_read, 1, capacity - total_read, pipe)) > 0) {
-		total_read += nread;
-		if (total_read >= capacity) {
-			capacity *= 2;
-			char* new_output = realloc(output, capacity + 1);
-			if (!new_output) {
-				free(output);
-				pclose(pipe);
-				fatal_error("Failed to reallocate buffer for CLI output");
-			}
-			output = new_output;
-		}
-	}
-
-	output[total_read] = '\0';
+	size_t nread = fread(output, 1, READ_BUFFER_SIZE, pipe);
+	output[nread] = '\0';
 
 	int status = pclose(pipe);
 	if (status != 0) {
@@ -153,8 +99,8 @@ static char* execute_cli_command(const char* command_string)
 		}
 	}
 
-	if (total_read > 0 && output[total_read - 1] == '\n') {
-		output[total_read - 1] = '\0';
+	if (nread > 0 && output[nread - 1] == '\n') {
+		output[nread - 1] = '\0';
 	}
 
 	return output;
@@ -169,19 +115,20 @@ static char* execute_aerospace_command(aerospace* client, const char** args, int
 	}
 
 	if (client->use_cli_fallback) {
-		size_t total_len = strlen("aerospace") + 1;
+		size_t total_len = strlen("aerospace");
 		for (int i = 0; i < arg_count; i++) {
-			total_len += strlen(args[i]) + 1;
+			total_len += 1 + strlen(args[i]);
 		}
 
-		char* cli_command_base = malloc(total_len);
+		char* cli_command_base = malloc(total_len + 1);
 		if (!cli_command_base) {
 			fatal_error("Failed to allocate memory for CLI command");
 		}
-		strcpy(cli_command_base, "aerospace");
+
+		char* p = cli_command_base;
+		p += sprintf(p, "aerospace");
 		for (int i = 0; i < arg_count; i++) {
-			strcat(cli_command_base, " ");
-			strcat(cli_command_base, args[i]);
+			p += sprintf(p, " %s", args[i]);
 		}
 
 		char* final_command;
@@ -200,58 +147,90 @@ static char* execute_aerospace_command(aerospace* client, const char** args, int
 		return result;
 	}
 
-	cJSON* args_array = cJSON_CreateArray();
+	yyjson_mut_doc* doc = yyjson_mut_doc_new(NULL);
+	yyjson_mut_val* root = yyjson_mut_obj(doc);
+	yyjson_mut_doc_set_root(doc, root);
+	yyjson_mut_obj_add_str(doc, root, "command", args[0]);
+	yyjson_mut_obj_add_str(doc, root, "stdin", stdin_payload ? stdin_payload : "");
+	yyjson_mut_val* args_array = yyjson_mut_arr(doc);
 	for (int i = 0; i < arg_count; i++) {
-		cJSON_AddItemToArray(args_array, cJSON_CreateString(args[i]));
+		yyjson_mut_arr_add_str(doc, args_array, args[i]);
+	}
+	yyjson_mut_obj_add_val(doc, root, "args", args_array);
+	size_t len;
+	const char* json_str = yyjson_mut_write(doc, 0, &len);
+	yyjson_mut_doc_free(doc);
+	if (!json_str) {
+		fatal_error(ERROR_JSON_PRINT);
 	}
 
-	cJSON* query = cJSON_CreateObject();
-	if (!cJSON_AddStringToObject(query, "command", args[0]) || !cJSON_AddItemToObject(query, "args", args_array) || !cJSON_AddStringToObject(query, "stdin", stdin_payload ? stdin_payload : "")) {
-		cJSON_Delete(query);
-		fatal_error(ERROR_JSON_CREATE);
+	struct iovec iov[2];
+	char newline = '\n';
+	iov[0].iov_base = (void*)json_str;
+	iov[0].iov_len = len;
+	iov[1].iov_base = &newline;
+	iov[1].iov_len = 1;
+
+	if (writev(client->fd, iov, 2) < 0) {
+		perror("writev failed");
+	}
+	free((void*)json_str);
+
+	yyjson_doc* resp_doc = NULL;
+	yyjson_read_err err;
+	size_t parsed_bytes = 0;
+
+	while (true) {
+		if (client->read_buf_len > 0) {
+			resp_doc = yyjson_read_opts(client->read_buf, client->read_buf_len, YYJSON_READ_STOP_WHEN_DONE, NULL, &err);
+			if (resp_doc) {
+				parsed_bytes = yyjson_doc_get_read_size(resp_doc);
+				break;
+			}
+		}
+		if (client->read_buf_len >= READ_BUFFER_SIZE) {
+			fprintf(stderr, "Error: Read buffer overflow, clearing buffer.\n");
+			client->read_buf_len = 0;
+			return NULL;
+		}
+		ssize_t bytes_read = read(client->fd, client->read_buf + client->read_buf_len, READ_BUFFER_SIZE - client->read_buf_len);
+		if (bytes_read <= 0) {
+			fprintf(stderr, "%s\n", ERROR_SOCKET_RECEIVE);
+			return NULL;
+		}
+		client->read_buf_len += bytes_read;
 	}
 
-	char* json_str = cJSON_PrintUnformatted(query);
-	cJSON_Delete(query);
-	write_all(client->fd, json_str, strlen(json_str) + 1);
-	free(json_str);
-
-	char* response_str = malloc(DEFAULT_MAX_BUFFER_SIZE + 1);
-	ssize_t bytes_read = read(client->fd, response_str, DEFAULT_MAX_BUFFER_SIZE);
-	if (bytes_read < 0) {
-		free(response_str);
-		fatal_error("%s", ERROR_SOCKET_RECEIVE);
+	if (client->read_buf_len > parsed_bytes) {
+		memmove(client->read_buf, client->read_buf + parsed_bytes, client->read_buf_len - parsed_bytes);
 	}
-	response_str[bytes_read] = '\0';
+	client->read_buf_len -= parsed_bytes;
 
-	cJSON* response_json = decode_response(response_str);
-	free(response_str);
-	if (!response_json) return NULL;
-
+	yyjson_val* resp_root = yyjson_doc_get_root(resp_doc);
+	char* result = NULL;
 	int exitCode = -1;
-	cJSON* exitCodeItem = cJSON_GetObjectItemCaseSensitive(response_json, "exitCode");
-	if (cJSON_IsNumber(exitCodeItem)) {
-		exitCode = exitCodeItem->valueint;
+	yyjson_val* exitCodeItem = yyjson_obj_get(resp_root, "exitCode");
+	if (yyjson_is_int(exitCodeItem)) {
+		exitCode = (int)yyjson_get_int(exitCodeItem);
 	} else {
-		fprintf(stderr, ERROR_RESPONSE_FORMAT, "exitCode\n");
-		cJSON_Delete(response_json);
+		fprintf(stderr, "Response does not contain valid %s field\n", "exitCode");
+		yyjson_doc_free(resp_doc);
 		return NULL;
 	}
 
-	char* result = NULL;
 	if (exitCode != 0) {
-		cJSON* output_item = cJSON_GetObjectItemCaseSensitive(response_json, "stderr");
-		if (cJSON_IsString(output_item) && output_item->valuestring) {
-			result = strdup(output_item->valuestring);
+		yyjson_val* output_item = yyjson_obj_get(resp_root, "stderr");
+		if (yyjson_is_str(output_item)) {
+			result = strdup(yyjson_get_str(output_item));
 		}
 	} else if (expected_output_field) {
-		cJSON* output_item = cJSON_GetObjectItemCaseSensitive(response_json, expected_output_field);
-		if (cJSON_IsString(output_item) && output_item->valuestring) {
-			result = strdup(output_item->valuestring);
+		yyjson_val* output_item = yyjson_obj_get(resp_root, expected_output_field);
+		if (yyjson_is_str(output_item)) {
+			result = strdup(yyjson_get_str(output_item));
 		}
 	}
 
-	cJSON_Delete(response_json);
+	yyjson_doc_free(resp_doc);
 	return result;
 }
 
@@ -260,6 +239,7 @@ aerospace* aerospace_new(const char* socketPath)
 	aerospace* client = malloc(sizeof(aerospace));
 	client->fd = -1;
 	client->use_cli_fallback = false;
+	client->read_buf_len = 0;
 
 	if (socketPath)
 		client->socket_path = strdup(socketPath);
@@ -323,10 +303,8 @@ char* aerospace_switch(aerospace* client, const char* direction)
 char* aerospace_workspace(aerospace* client, int wrap_around, const char* ws_command,
 	const char* stdin_payload)
 {
-	const char* args[3];
-	int arg_count = 0;
-	args[arg_count++] = "workspace";
-	args[arg_count++] = ws_command;
+	const char* args[3] = { "workspace", ws_command };
+	int arg_count = 2;
 	if (wrap_around) {
 		args[arg_count++] = "--wrap-around";
 	}
@@ -335,15 +313,11 @@ char* aerospace_workspace(aerospace* client, int wrap_around, const char* ws_com
 
 char* aerospace_list_workspaces(aerospace* client, bool include_empty)
 {
-	const char* args[5];
-	int arg_count = 0;
-	args[arg_count++] = "list-workspaces";
-	args[arg_count++] = "--monitor";
-	args[arg_count++] = "focused";
-	if (!include_empty) {
-		args[arg_count++] = "--empty";
-		args[arg_count++] = "no";
+	if (include_empty) {
+		const char* args[] = { "list-workspaces", "--monitor", "focused" };
+		return execute_aerospace_command(client, args, 3, "", "stdout");
+	} else {
+		const char* args[] = { "list-workspaces", "--monitor", "focused", "--empty", "no" };
+		return execute_aerospace_command(client, args, 5, "", "stdout");
 	}
-
-	return execute_aerospace_command(client, args, arg_count, "", "stdout");
 }
