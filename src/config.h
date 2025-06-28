@@ -1,3 +1,4 @@
+#include <CoreFoundation/CoreFoundation.h>
 #define CONFIG_H
 
 #include "cJSON.h"
@@ -21,6 +22,9 @@ typedef struct {
 	float min_travel;
 	float min_step_fast;
 	float min_travel_fast;
+	float palm_disp;
+	CFTimeInterval palm_age;
+	float palm_velocity;
 	const char* swipe_left;
 	const char* swipe_right;
 } Config;
@@ -40,6 +44,9 @@ static Config default_config()
 	config.min_travel = 0.015f;
 	config.min_step_fast = 0.0f;
 	config.min_travel_fast = 0.006f;
+	config.palm_disp = 0.025; // 2.5% pad from origin
+	config.palm_age = 0.06; // 60ms before judgment
+	config.palm_velocity = 0.1; // 10% of pad dimension per second
 	config.swipe_left = "prev";
 	config.swipe_right = "next";
 	return config;
