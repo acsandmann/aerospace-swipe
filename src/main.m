@@ -223,98 +223,24 @@ unlock:
 	pthread_mutex_unlock(&g_gesture_mutex);
 }
 
-static void mark_all_tracks_unseen(void)
+static void process_touches(NSSet<NSTouch*>* touches)
 {
-	for (id k in (__bridge NSDictionary*)g_tracks) {
-		finger_track* trk = (finger_track*)CFDictionaryGetValue(g_tracks, (__bridge const void*)k);
-		trk->seen = false;
-	}
-}
-
-static void update_or_create_track(NSTouch* touch, CFTimeInterval now)
-{
-	const void* key = (__bridge const void*)touch.identity;
-	finger_track* trk = (finger_track*)CFDictionaryGetValue(g_tracks, key);
-	CGPoint p = touch.normalizedPosition;
-
-	if (!trk) {
-		trk = calloc(1, sizeof(*trk));
-		trk->start = trk->last = p;
-		trk->t_start = trk->t_last = now;
-		CFDictionarySetValue(g_tracks, key, trk);
-	}
-
-	CFTimeInterval dt = now - trk->t_last;
-	CGFloat step = hypot(p.x - trk->last.x, p.y - trk->last.y);
-	CGFloat vel = (dt > 0) ? (step / dt) : 0.0f;
-	CGFloat disp = hypot(p.x - trk->start.x, p.y - trk->start.y);
-
-	trk->last = p;
-	trk->t_last = now;
-
-	if (!trk->is_palm) {
-		bool agedEnough = (now - trk->t_start) > g_config.palm_age;
-		bool trivialDisp = disp < g_config.palm_disp;
-		bool slowEnough = vel < g_config.palm_velocity;
-
-		if (agedEnough && trivialDisp && slowEnough)
-			trk->is_palm = true;
-	}
-
-	trk->seen = true;
-}
-
-static void remove_unseen_tracks(void)
-{
-	NSMutableArray* dead = [NSMutableArray array];
-
-	for (id k in (__bridge NSDictionary*)g_tracks) {
-		finger_track* trk = (finger_track*)CFDictionaryGetValue(g_tracks, (__bridge const void*)k);
-		if (!trk->seen)
-			[dead addObject:k];
-	}
-
-	for (id k in dead) {
-		free(CFDictionaryGetValue(g_tracks, (__bridge const void*)k));
-		CFDictionaryRemoveValue(g_tracks, (__bridge const void*)k);
-	}
-}
-
-static void update_tracks(NSSet<NSTouch*>* touches, CFTimeInterval now)
-{
-	mark_all_tracks_unseen();
-
-	for (NSTouch* touch in touches) {
-		update_or_create_track(touch, now);
-	}
-
-	remove_unseen_tracks();
-}
-
-static NSUInteger count_live_touches(NSSet<NSTouch*>* touches)
-{
-	NSUInteger live = 0;
-	for (NSTouch* touch in touches) {
-		finger_track* trk = CFDictionaryGetValue(g_tracks, (__bridge const void*)touch.identity);
-		if (trk && !trk->is_palm)
-			++live;
-	}
-	return live;
-}
-
-static void process_live_touches(NSSet<NSTouch*>* touches, NSUInteger live_count)
-{
-	touch* buf = malloc(sizeof(touch) * live_count);
+	NSUInteger buf_capacity = touches.count > 0 ? touches.count : 4;
+	touch* buf = malloc(sizeof(touch) * buf_capacity);
 	NSUInteger i = 0;
 
 	for (NSTouch* touch in touches) {
-		finger_track* trk = CFDictionaryGetValue(g_tracks, (__bridge const void*)touch.identity);
-		if (trk && !trk->is_palm)
+		if (touch.phase != (1 << 2)) {
+			if (i >= buf_capacity) {
+				buf_capacity *= 2;
+				buf = realloc(buf, sizeof(touch) * buf_capacity);
+			}
 			buf[i++] = [TouchConverter convert_nstouch:touch];
+		}
 	}
 
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		gestureCallback(buf, (int)live_count);
+		gestureCallback(buf, (int)i);
 		free(buf);
 	});
 }
@@ -345,13 +271,7 @@ static CGEventRef key_handler(__unused CGEventTapProxy proxy, CGEventType type,
 	if (!touches.count)
 		return event;
 
-	update_tracks(touches, ev.timestamp);
-
-	NSUInteger live_count = count_live_touches(touches);
-	if (!live_count)
-		return event;
-
-	process_live_touches(touches, live_count);
+	process_touches(touches);
 
 	return event;
 }
