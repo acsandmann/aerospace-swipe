@@ -37,13 +37,13 @@ static Config default_config()
 	config.haptic = false;
 	config.skip_empty = true;
 	config.fingers = 3;
-	config.distance_pct = 0.12f; // ≥12 % travel triggers
-	config.velocity_pct = 0.50f; // ≥0.50 × w pts / s triggers
+	config.distance_pct = 0.08f; // ≥8 % travel triggers
+	config.velocity_pct = 0.30f; // ≥0.30 × w pts / s triggers
 	config.settle_factor = 0.15f; // ≤15 % of flick speed -> flick ended
 	config.min_step = 0.005f;
 	config.min_travel = 0.015f;
 	config.min_step_fast = 0.0f;
-	config.min_travel_fast = 0.006f;
+	config.min_travel_fast = 0.003f;
 	config.palm_disp = 0.025; // 2.5% pad from origin
 	config.palm_age = 0.06; // 60ms before judgment
 	config.palm_velocity = 0.1; // 10% of pad dimension per second
