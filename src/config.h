@@ -15,6 +15,7 @@ typedef struct {
 	bool haptic;
 	bool skip_empty;
 	int fingers;
+	int swipe_tolerance;
 	float distance_pct; // distance
 	float velocity_pct; // velocity
 	float settle_factor;
@@ -37,6 +38,7 @@ static Config default_config()
 	config.haptic = false;
 	config.skip_empty = true;
 	config.fingers = 3;
+	config.swipe_tolerance = 0;
 	config.distance_pct = 0.08f; // ≥8 % travel triggers
 	config.velocity_pct = 0.30f; // ≥0.30 × w pts / s triggers
 	config.settle_factor = 0.15f; // ≤15 % of flick speed -> flick ended
@@ -134,6 +136,10 @@ static Config load_config()
 	item = yyjson_obj_get(root, "fingers");
 	if (item && yyjson_is_int(item))
 		config.fingers = (int)yyjson_get_int(item);
+
+	item = yyjson_obj_get(root, "swipe_tolerance");
+	if (item && yyjson_is_int(item))
+		config.swipe_tolerance = (int)yyjson_get_int(item);
 
 	item = yyjson_obj_get(root, "distance_pct");
 	if (item && yyjson_is_real(item))
