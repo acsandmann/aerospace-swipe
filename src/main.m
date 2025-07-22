@@ -162,11 +162,15 @@ static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count,
 	bool fast = fabsf(avg_vel) >= g_config.velocity_pct * FAST_VEL_FACTOR;
 	float stepReq = fast ? g_config.min_step_fast : g_config.min_step;
 
+	int mismatch_count = 0;
 	for (int i = 0; i < count; ++i) {
 		float ddx = touches[i].x - ctx->prev_x[i];
 		if (fabsf(ddx) < stepReq || (ddx * dx) < 0) {
-			reset_gesture_state(ctx);
-			return;
+			mismatch_count++;
+			if (mismatch_count > g_config.swipe_tolerance) {
+				reset_gesture_state(ctx);
+				return;
+			}
 		}
 	}
 
