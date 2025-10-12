@@ -62,7 +62,7 @@ typedef struct {
 + (touch)convert_nstouch:(id)nsTouch;
 @end
 
-struct event_tap g_event_tap;
+extern struct event_tap g_event_tap;
 static CFMutableDictionaryRef touchStates;
 
 bool event_tap_enabled(struct event_tap* event_tap);

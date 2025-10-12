@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+struct event_tap g_event_tap = {0};
+
 @implementation TouchConverter
 
 + (touch)convert_nstouch:(id)nsTouch
