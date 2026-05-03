@@ -15,6 +15,8 @@
 #include "yyjson.h"
 
 #define READ_BUFFER_SIZE 8192
+#define SOCKET_CONNECT_MAX_ATTEMPTS 30
+#define SOCKET_CONNECT_RETRY_USEC 1000000
 
 static const char* ERROR_SOCKET_CREATE = "Failed to create Unix domain socket";
 static const char* ERROR_SOCKET_RECEIVE = "Failed to receive data from socket";
@@ -115,9 +117,21 @@ static char* execute_aerospace_command(aerospace* client, const char** args, int
 	}
 
 	if (client->use_cli_fallback) {
+		// AeroSpace v0.20.0+ requires `workspace next/prev` to receive an
+		// explicit --stdin or --no-stdin flag; without one the CLI errors out.
+		// The socket protocol carries stdin in its JSON envelope, so we only
+		// need this for the CLI fallback path.
+		const char* stdin_flag = NULL;
+		if (strcmp(args[0], "workspace") == 0) {
+			stdin_flag = (stdin_payload && strlen(stdin_payload) > 0) ? "--stdin" : "--no-stdin";
+		}
+
 		size_t total_len = strlen("aerospace");
 		for (int i = 0; i < arg_count; i++) {
 			total_len += 1 + strlen(args[i]);
+		}
+		if (stdin_flag) {
+			total_len += 1 + strlen(stdin_flag);
 		}
 
 		char* cli_command_base = malloc(total_len + 1);
@@ -129,6 +143,9 @@ static char* execute_aerospace_command(aerospace* client, const char** args, int
 		p += sprintf(p, "aerospace");
 		for (int i = 0; i < arg_count; i++) {
 			p += sprintf(p, " %s", args[i]);
+		}
+		if (stdin_flag) {
+			p += sprintf(p, " %s", stdin_flag);
 		}
 
 		char* final_command;
@@ -246,28 +263,42 @@ aerospace* aerospace_new(const char* socketPath)
 	else
 		client->socket_path = get_default_socket_path();
 
-	errno = 0;
-	client->fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (client->fd < 0) {
-		int socket_errno = errno;
-		free(client->socket_path);
-		free(client);
-		errno = socket_errno;
-		fatal_error("%s", ERROR_SOCKET_CREATE);
-	}
-
 	struct sockaddr_un addr;
 	memset(&addr, 0, sizeof(struct sockaddr_un));
 	addr.sun_family = AF_UNIX;
 	strncpy(addr.sun_path, client->socket_path, sizeof(addr.sun_path) - 1);
 	addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
 
-	errno = 0;
-	if (connect(client->fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-		int connect_errno = errno;
-		fprintf(stderr, WARN_CLI_FALLBACK, client->socket_path, strerror(connect_errno), connect_errno);
+	// AeroSpace may not be ready when we start (e.g. at login). Retry the
+	// connect with bounded backoff before giving up and falling back to CLI,
+	// otherwise we get stuck in CLI mode for the entire session.
+	int connect_errno = 0;
+	for (int attempt = 0; attempt < SOCKET_CONNECT_MAX_ATTEMPTS; attempt++) {
+		errno = 0;
+		client->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (client->fd < 0) {
+			int socket_errno = errno;
+			free(client->socket_path);
+			free(client);
+			errno = socket_errno;
+			fatal_error("%s", ERROR_SOCKET_CREATE);
+		}
+
+		errno = 0;
+		if (connect(client->fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+			connect_errno = 0;
+			break;
+		}
+		connect_errno = errno;
 		close(client->fd);
 		client->fd = -1;
+		if (attempt + 1 < SOCKET_CONNECT_MAX_ATTEMPTS) {
+			usleep(SOCKET_CONNECT_RETRY_USEC);
+		}
+	}
+
+	if (connect_errno != 0) {
+		fprintf(stderr, WARN_CLI_FALLBACK, client->socket_path, strerror(connect_errno), connect_errno);
 		client->use_cli_fallback = true;
 	}
 
