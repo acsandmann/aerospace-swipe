@@ -478,3 +478,9 @@ char* aerospace_list_workspaces(aerospace* client, bool include_empty)
 		return execute_aerospace_command(client, args, 5, "", "stdout");
 	}
 }
+
+char* aerospace_exec(aerospace* client, const char** args, int arg_count,
+	const char* expected_output_field)
+{
+	return execute_aerospace_command(client, args, arg_count, "", expected_output_field);
+}

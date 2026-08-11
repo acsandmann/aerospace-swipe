@@ -47,8 +47,106 @@ extern bool IOHIDRequestAccess(IOHIDRequestType);
 
 static CFArrayRef g_mt_devices = NULL;
 
+// AeroSpace numbers monitors by arrangement (left to right), so sorting
+// CG displays by x-origin gives the same ids. Returns 0 on failure.
+static int monitor_under_cursor(void)
+{
+	CGEventRef ev = CGEventCreate(NULL);
+	if (!ev)
+		return 0;
+	CGPoint p = CGEventGetLocation(ev);
+	CFRelease(ev);
+
+	CGDirectDisplayID ids[8];
+	uint32_t n = 0;
+	if (CGGetActiveDisplayList(8, ids, &n) != kCGErrorSuccess || !n)
+		return 0;
+
+	// sort by x-origin (tiny n, insertion sort)
+	for (uint32_t i = 1; i < n; ++i)
+		for (uint32_t j = i; j > 0; --j)
+			if (CGDisplayBounds(ids[j]).origin.x < CGDisplayBounds(ids[j - 1]).origin.x) {
+				CGDirectDisplayID t = ids[j];
+				ids[j] = ids[j - 1];
+				ids[j - 1] = t;
+			}
+
+	for (uint32_t i = 0; i < n; ++i)
+		if (CGRectContainsPoint(CGDisplayBounds(ids[i]), p))
+			return (int)i + 1;
+	return 0;
+}
+
+// Step to the neighbouring workspace of the monitor the cursor is on
+// (native-Spaces semantics: the swipe acts where the pointer is, never
+// on the other monitor). Returns false so the caller can fall back to
+// focused-monitor stepping when the cursor's monitor or its visible
+// workspace can't be resolved.
+static bool switch_on_cursor_monitor(const char* ws)
+{
+	int mon = monitor_under_cursor();
+	if (!mon)
+		return false;
+	int dir = strcmp(ws, "next") == 0 ? 1 : strcmp(ws, "prev") == 0 ? -1 : 0;
+	if (!dir)
+		return false;
+
+	char mon_str[16];
+	snprintf(mon_str, sizeof mon_str, "%d", mon);
+
+	const char* vis_args[] = { "list-workspaces", "--monitor", mon_str, "--visible" };
+	char* visible = aerospace_exec(g_aerospace, vis_args, 4, "stdout");
+	if (!visible)
+		return false;
+	visible[strcspn(visible, "\r\n")] = '\0';
+
+	const char* list_args[] = { "list-workspaces", "--monitor", mon_str, "--empty", "no" };
+	char* list = aerospace_exec(g_aerospace, list_args, g_config.skip_empty ? 5 : 3, "stdout");
+	if (!list) {
+		free(visible);
+		return false;
+	}
+
+	char* names[64];
+	int count = 0, cur = -1;
+	for (char* tok = strtok(list, "\r\n"); tok && count < 64; tok = strtok(NULL, "\r\n")) {
+		if (!*tok)
+			continue;
+		names[count] = tok;
+		if (strcmp(tok, visible) == 0)
+			cur = count;
+		count++;
+	}
+
+	bool ok = false;
+	if (count > 0 && cur >= 0) {
+		int next = cur + dir;
+		if (g_config.wrap_around)
+			next = (next + count) % count;
+		if (next >= 0 && next < count && next != cur) {
+			const char* sw_args[] = { "workspace", names[next] };
+			char* result = aerospace_exec(g_aerospace, sw_args, 2, NULL);
+			free(result);
+			printf("Switched monitor %s to workspace '%s'.\n", mon_str, names[next]);
+			ok = true;
+		} else {
+			ok = true; // at the edge without wrap: consume the swipe, do nothing
+		}
+	}
+
+	free(visible);
+	free(list);
+	return ok;
+}
+
 static void switch_workspace(const char* ws)
 {
+	if (g_config.cursor_monitor && switch_on_cursor_monitor(ws)) {
+		if (g_config.haptic && g_haptic)
+			haptic_actuate(g_haptic, 3);
+		return;
+	}
+
 	if (g_config.skip_empty || g_config.wrap_around) {
 		char* workspaces = aerospace_list_workspaces(g_aerospace, !g_config.skip_empty);
 		if (!workspaces) {
