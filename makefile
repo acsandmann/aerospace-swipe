@@ -1,6 +1,6 @@
 CC = clang
 CFLAGS = -std=c99 -O3 -march=native -flto -fomit-frame-pointer -funroll-loops -g -Wall -Wextra -Wno-pointer-integer-compare -Wno-incompatible-pointer-types-discards-qualifiers -Wno-absolute-value -fobjc-arc
-FRAMEWORKS = -framework CoreFoundation -framework IOKit -F/System/Library/PrivateFrameworks -framework MultitouchSupport -framework ApplicationServices -framework Cocoa
+FRAMEWORKS = -framework CoreFoundation -framework IOKit -F/System/Library/PrivateFrameworks -framework MultitouchSupport -framework ApplicationServices -framework Cocoa -framework QuartzCore
 LDLIBS = -ldl
 TARGET = swipe
 

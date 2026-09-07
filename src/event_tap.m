@@ -1,4 +1,5 @@
 #import "event_tap.h"
+#import <QuartzCore/QuartzCore.h>
 #import <AppKit/AppKit.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <objc/message.h>
@@ -20,7 +21,7 @@ struct event_tap g_event_tap = { 0 };
 	nt.y = pos.y;
 
 	nt.phase = (int)[touchObj phase];
-	nt.timestamp = [[touchObj valueForKey:@"timestamp"] doubleValue];
+	nt.timestamp = CACurrentMediaTime();
 
 	id touchIdentity = [touchObj identity];
 
