@@ -204,12 +204,21 @@ static void gestureCallback(touch* touches, int count)
 		for (int i = 0; i < count; ++i)
 			ctx->prev_x[i] = ctx->base_x[i] = touches[i].x;
 
+		ctx->last_count = count;
 		goto unlock;
 	}
 
 	float avg_x, avg_y, avg_vel, min_x, max_x, min_y, max_y;
 	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_vel,
 		&min_x, &max_x, &min_y, &max_y);
+
+	if (ctx->last_count != count) {
+		ctx->start_x = avg_x;
+		ctx->start_y = avg_y;
+		for (int i = 0; i < count; ++i)
+			ctx->base_x[i] = touches[i].x;
+	}
+	ctx->last_count = count;
 
 	if (ctx->state == GS_IDLE) {
 		handle_idle_state(ctx, touches, count, avg_x, avg_y, avg_vel);
@@ -219,8 +228,6 @@ static void gestureCallback(touch* touches, int count)
 
 	for (int i = 0; i < count; ++i) {
 		ctx->prev_x[i] = touches[i].x;
-		if (ctx->state == GS_IDLE)
-			ctx->base_x[i] = touches[i].x;
 	}
 
 unlock:

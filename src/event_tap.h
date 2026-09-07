@@ -48,6 +48,7 @@ typedef struct {
 	float start_x, start_y, peak_velx;
 	int dir, last_fire_dir;
 	float prev_x[MAX_TOUCHES], base_x[MAX_TOUCHES];
+	int last_count;
 } gesture_ctx;
 
 // Palm rejection tracking structure
