@@ -28,6 +28,7 @@ static void switch_workspace(const char* ws)
 			fprintf(stderr, "Error: Failed to switch workspace to '%s'.\n", ws);
 		} else {
 			printf("Switched workspace successfully to '%s'.\n", ws);
+			fflush(stdout);
 		}
 		free(workspaces);
 		free(result);
@@ -37,6 +38,7 @@ static void switch_workspace(const char* ws)
 			fprintf(stderr, "Error: Failed to switch workspace: '%s'\n", result);
 		} else {
 			printf("Switched workspace successfully to '%s'.\n", ws);
+			fflush(stdout);
 		}
 		free(result);
 	}
@@ -332,7 +334,6 @@ void waitForAccessibilityAndRestart(void)
 
 int main(int argc, const char* argv[])
 {
-	signal(SIGCHLD, SIG_IGN);
 	signal(SIGPIPE, SIG_IGN);
 
 	acquire_lockfile();
