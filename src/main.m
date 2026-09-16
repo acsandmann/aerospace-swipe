@@ -15,6 +15,38 @@ static pthread_mutex_t g_gesture_mutex = PTHREAD_MUTEX_INITIALIZER;
 static gesture_ctx g_gesture_ctx = { 0 };
 static CFMutableDictionaryRef g_tracks = NULL;
 
+// --- raw MultitouchSupport detection -----------------------------------
+// On macOS 26.3 a CGEvent tap no longer carries multi-touch data (each
+// gesture event exposes at most one NSTouch), so the event-tap path can
+// never see the configured finger count. Raw contact frames from the
+// private MultitouchSupport framework still deliver every finger with
+// position and velocity; feed those into the same gesture engine.
+typedef struct { float x, y; } mtPoint;
+typedef struct { mtPoint pos, vel; } mtReadout;
+typedef struct {
+	int frame;
+	double timestamp;
+	int identifier, state, foo3, foo4;
+	mtReadout normalized;
+	float size;
+	int zero1;
+	float angle, majorAxis, minorAxis;
+	mtReadout mm;
+	int zero2[2];
+	float unk2;
+} MTFinger;
+typedef void* MTDeviceRef;
+typedef int (*MTContactCallbackFunction)(int, MTFinger*, int, double, int);
+CFMutableArrayRef MTDeviceCreateList(void);
+void MTRegisterContactFrameCallback(MTDeviceRef, MTContactCallbackFunction);
+void MTDeviceStart(MTDeviceRef, int);
+
+typedef uint64_t IOHIDRequestType;
+enum { kIOHIDRequestTypeListenEvent = 1 };
+extern bool IOHIDRequestAccess(IOHIDRequestType);
+
+static CFArrayRef g_mt_devices = NULL;
+
 static void switch_workspace(const char* ws)
 {
 	if (g_config.skip_empty || g_config.wrap_around) {
@@ -227,57 +259,38 @@ unlock:
 	pthread_mutex_unlock(&g_gesture_mutex);
 }
 
-static void process_touches(NSSet<NSTouch*>* touches)
+// MT finger states: 1 start, 2 hover, 3 make, 4 touching, 5 break,
+// 6 linger, 7 leave. Count fingers that are on the surface (3-5);
+// lift-off shows up as the count dropping, which the engine already
+// treats as gesture end.
+static int mt_contact_callback(int device, MTFinger* data, int nFingers,
+	double timestamp, int frame)
 {
-	NSUInteger buf_capacity = touches.count > 0 ? touches.count : 4;
-	touch* buf = malloc(sizeof(touch) * buf_capacity);
-	NSUInteger i = 0;
+	(void)device;
+	(void)frame;
 
-	for (NSTouch* touch in touches) {
-		if (touch.phase != (1 << 2)) {
-			if (i >= buf_capacity) {
-				buf_capacity *= 2;
-				buf = realloc(buf, sizeof(touch) * buf_capacity);
-			}
-			buf[i++] = [TouchConverter convert_nstouch:touch];
-		}
+	int cap = nFingers > 0 ? nFingers : 1;
+	touch* buf = malloc(sizeof(touch) * cap);
+	int n = 0;
+
+	for (int i = 0; i < nFingers; ++i) {
+		if (data[i].state < 3 || data[i].state > 5)
+			continue;
+		buf[n].x = data[i].normalized.pos.x;
+		buf[n].y = data[i].normalized.pos.y;
+		buf[n].velocity = data[i].normalized.vel.x;
+		buf[n].timestamp = timestamp;
+		buf[n].phase = 1 << 1; // moved; lift-off is signaled by count dropping
+		buf[n].is_palm = false;
+		n++;
 	}
 
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		gestureCallback(buf, (int)i);
+		gestureCallback(buf, n);
 		free(buf);
 	});
-}
 
-static CGEventRef key_handler(__unused CGEventTapProxy proxy, CGEventType type,
-	CGEventRef event, void* ref)
-{
-	struct event_tap* event_tap_ref = (struct event_tap*)ref;
-
-	if (!AXIsProcessTrusted()) {
-		NSLog(@"Accessibility permission lost, disabling tap.");
-		event_tap_end(event_tap_ref);
-		return event;
-	}
-
-	if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
-		NSLog(@"Event-tap re-enabled.");
-		CGEventTapEnable(event_tap_ref->handle, true);
-		return event;
-	}
-
-	if (type != NSEventTypeGesture)
-		return event;
-
-	NSEvent* ev = [NSEvent eventWithCGEvent:event];
-	NSSet<NSTouch*>* touches = ev.allTouches;
-
-	if (!touches.count)
-		return event;
-
-	process_touches(touches);
-
-	return event;
+	return 0;
 }
 
 static void acquire_lockfile(void)
@@ -371,7 +384,23 @@ int main(int argc, const char* argv[])
 			&kCFTypeDictionaryKeyCallBacks,
 			NULL);
 
-		event_tap_begin(&g_event_tap, key_handler);
+		// Raw contact frames need the Input Monitoring permission
+		// (this prompts on first run) and a running run loop, which
+		// NSApplicationMain provides below.
+		IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
+
+		g_mt_devices = MTDeviceCreateList();
+		CFIndex mt_count = g_mt_devices ? CFArrayGetCount(g_mt_devices) : 0;
+		if (!mt_count) {
+			fprintf(stderr, "Error: no multitouch devices found.\n");
+			exit(EXIT_FAILURE);
+		}
+		for (CFIndex i = 0; i < mt_count; ++i) {
+			MTDeviceRef dev = (MTDeviceRef)CFArrayGetValueAtIndex(g_mt_devices, i);
+			MTRegisterContactFrameCallback(dev, mt_contact_callback);
+			MTDeviceStart(dev, 0);
+		}
+		NSLog(@"Raw multitouch detection active on %ld device(s).", (long)mt_count);
 
 		return NSApplicationMain(argc, argv);
 	}
