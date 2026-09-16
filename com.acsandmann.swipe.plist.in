@@ -16,6 +16,14 @@
     <key>KeepAlive</key>
     <true/>
 
+    <!-- launchd does not inherit the login shell's PATH; without this the
+         CLI fallback cannot find the `aerospace` binary installed by Homebrew. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
 	<key>LimitLoadToSessionType</key>
 	<string>Aqua</string>
 
