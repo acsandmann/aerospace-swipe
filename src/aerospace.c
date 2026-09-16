@@ -278,6 +278,50 @@ static char* execute_socket_command(aerospace* client, const char** args, int ar
 	return result;
 }
 
+// Open a fresh connection to the AeroSpace socket, configure timeouts and
+// negotiate the protocol. On failure client->fd is left at -1 and errno is set.
+static bool socket_connect(aerospace* client)
+{
+	struct sockaddr_un addr;
+	memset(&addr, 0, sizeof(struct sockaddr_un));
+	addr.sun_family = AF_UNIX;
+	strncpy(addr.sun_path, client->socket_path, sizeof(addr.sun_path) - 1);
+	addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
+
+	errno = 0;
+	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0)
+		fatal_error("%s", ERROR_SOCKET_CREATE);
+
+	errno = 0;
+	if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+		int saved_errno = errno;
+		close(fd);
+		errno = saved_errno;
+		return false;
+	}
+
+	client->fd = fd;
+	if (!configure_socket_timeouts(fd) || !perform_protocol_handshake(client)) {
+		int saved_errno = errno;
+		close(fd);
+		client->fd = -1;
+		errno = saved_errno;
+		return false;
+	}
+
+	client->use_cli_fallback = false;
+	return true;
+}
+
+static void socket_disconnect(aerospace* client)
+{
+	if (client->fd >= 0) {
+		close(client->fd);
+		client->fd = -1;
+	}
+}
+
 static char* execute_aerospace_command(aerospace* client, const char** args, int arg_count, const char* stdin_payload, const char* expected_output_field)
 {
 	if (!client || !args || arg_count == 0) {
@@ -294,6 +338,11 @@ static char* execute_aerospace_command(aerospace* client, const char** args, int
 		stdin_flag = (stdin_payload && strlen(stdin_payload) > 0) ? "--stdin" : "--no-stdin";
 
 	pthread_mutex_lock(&client->command_mutex);
+
+	// If a previous transport error pushed us into CLI mode, see whether the
+	// socket is reachable again so we don't stay degraded for the whole session.
+	if (client->use_cli_fallback && socket_connect(client))
+		fprintf(stderr, "Reconnected to AeroSpace socket at %s.\n", client->socket_path);
 
 	if (client->use_cli_fallback) {
 		size_t total_len = strlen("aerospace");
@@ -347,9 +396,14 @@ static char* execute_aerospace_command(aerospace* client, const char** args, int
 	char* result = execute_socket_command(client, args, arg_count, stdin_payload,
 		stdin_flag, expected_output_field, &transport_ok);
 	if (!transport_ok) {
-		close(client->fd);
-		client->fd = -1;
-		client->use_cli_fallback = true;
+		// The connection is in an unknown state (e.g. a timed-out read may
+		// leave a stale response queued), so drop it and dial a fresh one.
+		// The command itself is not retried: it may already have run.
+		socket_disconnect(client);
+		if (!socket_connect(client)) {
+			fprintf(stderr, WARN_CLI_FALLBACK, client->socket_path, strerror(errno), errno);
+			client->use_cli_fallback = true;
+		}
 		if (!expected_output_field)
 			result = strdup("AeroSpace socket communication failed");
 	}
@@ -378,50 +432,21 @@ aerospace* aerospace_new(const char* socketPath)
 	else
 		client->socket_path = get_default_socket_path();
 
-	struct sockaddr_un addr;
-	memset(&addr, 0, sizeof(struct sockaddr_un));
-	addr.sun_family = AF_UNIX;
-	strncpy(addr.sun_path, client->socket_path, sizeof(addr.sun_path) - 1);
-	addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
-
 	// AeroSpace may not be ready when we start (e.g. at login). Retry the
-	// connect with bounded backoff before giving up and falling back to CLI,
-	// otherwise we get stuck in CLI mode for the entire session.
+	// connect with bounded backoff before giving up and falling back to CLI.
 	int connect_errno = 0;
 	for (int attempt = 0; attempt < SOCKET_CONNECT_MAX_ATTEMPTS; attempt++) {
-		errno = 0;
-		client->fd = socket(AF_UNIX, SOCK_STREAM, 0);
-		if (client->fd < 0) {
-			int socket_errno = errno;
-			free(client->socket_path);
-			pthread_mutex_destroy(&client->command_mutex);
-			free(client);
-			errno = socket_errno;
-			fatal_error("%s", ERROR_SOCKET_CREATE);
-		}
-
-		errno = 0;
-		if (connect(client->fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+		if (socket_connect(client)) {
 			connect_errno = 0;
 			break;
 		}
 		connect_errno = errno;
-		close(client->fd);
-		client->fd = -1;
-		if (attempt + 1 < SOCKET_CONNECT_MAX_ATTEMPTS) {
+		if (attempt + 1 < SOCKET_CONNECT_MAX_ATTEMPTS)
 			usleep(SOCKET_CONNECT_RETRY_USEC);
-		}
 	}
 
 	if (connect_errno != 0) {
 		fprintf(stderr, WARN_CLI_FALLBACK, client->socket_path, strerror(connect_errno), connect_errno);
-		client->use_cli_fallback = true;
-	} else if (!configure_socket_timeouts(client->fd) || !perform_protocol_handshake(client)) {
-		int handshake_errno = errno;
-		fprintf(stderr, "Warning: Failed to negotiate socket protocol at %s: %s (errno %d). Falling back to CLI.\n",
-			client->socket_path, strerror(handshake_errno), handshake_errno);
-		close(client->fd);
-		client->fd = -1;
 		client->use_cli_fallback = true;
 	}
 
