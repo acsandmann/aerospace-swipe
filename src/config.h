@@ -14,6 +14,7 @@ typedef struct {
 	bool wrap_around;
 	bool haptic;
 	bool skip_empty;
+	bool cursor_monitor;
 	int fingers;
 	int swipe_tolerance;
 	float distance_pct; // distance
@@ -37,6 +38,7 @@ static Config default_config()
 	config.wrap_around = true;
 	config.haptic = false;
 	config.skip_empty = true;
+	config.cursor_monitor = false;
 	config.fingers = 3;
 	config.swipe_tolerance = 0;
 	config.distance_pct = 0.08f; // ≥8 % travel triggers
@@ -132,6 +134,10 @@ static Config load_config()
 	item = yyjson_obj_get(root, "skip_empty");
 	if (item && yyjson_is_bool(item))
 		config.skip_empty = yyjson_get_bool(item);
+
+	item = yyjson_obj_get(root, "cursor_monitor");
+	if (item && yyjson_is_bool(item))
+		config.cursor_monitor = yyjson_get_bool(item);
 
 	item = yyjson_obj_get(root, "fingers");
 	if (item && yyjson_is_int(item))

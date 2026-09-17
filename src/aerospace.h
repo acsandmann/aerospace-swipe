@@ -17,3 +17,6 @@ char* aerospace_switch(aerospace* client, const char* direction);
 char* aerospace_workspace(aerospace* client, int wrap_around, const char* ws_command, const char* stdin_payload);
 
 char* aerospace_list_workspaces(aerospace* client, bool include_empty);
+
+char* aerospace_exec(aerospace* client, const char** args, int arg_count,
+	const char* expected_output_field);
