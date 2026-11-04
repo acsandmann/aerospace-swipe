@@ -45,10 +45,48 @@ static void switch_workspace(const char* ws)
 		haptic_actuate(g_haptic, 3);
 }
 
+static void run_command(const char* command)
+{
+	if (!command || !*command)
+		return;
+
+	char* result = aerospace_run(g_aerospace, command);
+	if (result) {
+		fprintf(stderr, "Error: Failed to run '%s': %s\n", command, result);
+	} else {
+		printf("Ran '%s' successfully.\n", command);
+	}
+	free(result);
+
+	if (g_config.haptic && g_haptic)
+		haptic_actuate(g_haptic, 3);
+}
+
+static bool vertical_enabled(void)
+{
+	return g_config.swipe_up[0] || g_config.swipe_down[0];
+}
+
+// Pick the component of a (x, y) pair that lies along the given axis.
+static inline float along(gesture_axis axis, float x, float y)
+{
+	return axis == AXIS_Y ? y : x;
+}
+
 static void reset_gesture_state(gesture_ctx* ctx)
 {
 	ctx->state = GS_IDLE;
 	ctx->last_fire_dir = 0;
+}
+
+static void arm_gesture(gesture_ctx* ctx, gesture_axis axis, float avg_x, float avg_y, float avg_vel)
+{
+	ctx->state = GS_ARMED;
+	ctx->axis = axis;
+	ctx->start_x = avg_x;
+	ctx->start_y = avg_y;
+	ctx->peak_vel = avg_vel;
+	ctx->dir = (avg_vel >= 0) ? 1 : -1;
 }
 
 static void fire_gesture(gesture_ctx* ctx, int direction)
@@ -58,38 +96,33 @@ static void fire_gesture(gesture_ctx* ctx, int direction)
 
 	ctx->last_fire_dir = direction;
 	ctx->state = GS_COMMITTED;
+	ctx->axis_locked = true;
+	gesture_axis axis = ctx->axis;
 
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		switch_workspace(direction > 0 ? g_config.swipe_right : g_config.swipe_left);
+		if (axis == AXIS_Y)
+			run_command(direction > 0 ? g_config.swipe_up : g_config.swipe_down);
+		else
+			switch_workspace(direction > 0 ? g_config.swipe_right : g_config.swipe_left);
 	});
 }
 
 static void calculate_touch_averages(touch* touches, int count,
-	float* avg_x, float* avg_y, float* avg_vel,
-	float* min_x, float* max_x, float* min_y, float* max_y)
+	float* avg_x, float* avg_y, float* avg_velx, float* avg_vely)
 {
-	*avg_x = *avg_y = *avg_vel = 0;
-	*min_x = *min_y = 1;
-	*max_x = *max_y = 0;
+	*avg_x = *avg_y = *avg_velx = *avg_vely = 0;
 
 	for (int i = 0; i < count; ++i) {
 		*avg_x += touches[i].x;
 		*avg_y += touches[i].y;
-		*avg_vel += touches[i].velocity;
-
-		if (touches[i].x < *min_x)
-			*min_x = touches[i].x;
-		if (touches[i].x > *max_x)
-			*max_x = touches[i].x;
-		if (touches[i].y < *min_y)
-			*min_y = touches[i].y;
-		if (touches[i].y > *max_y)
-			*max_y = touches[i].y;
+		*avg_velx += touches[i].velocity_x;
+		*avg_vely += touches[i].velocity_y;
 	}
 
 	*avg_x /= count;
 	*avg_y /= count;
-	*avg_vel /= count;
+	*avg_velx /= count;
+	*avg_vely /= count;
 }
 
 static bool handle_committed_state(gesture_ctx* ctx, touch* touches, int count)
@@ -107,65 +140,85 @@ static bool handle_committed_state(gesture_ctx* ctx, touch* touches, int count)
 		return true;
 	}
 
-	float avg_x, avg_y, avg_vel, min_x, max_x, min_y, max_y;
-	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_vel,
-		&min_x, &max_x, &min_y, &max_y);
+	float avg_x, avg_y, avg_velx, avg_vely;
+	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_velx, &avg_vely);
 
-	float dx = avg_x - ctx->start_x;
-	if ((dx * ctx->last_fire_dir) < 0 && fabsf(dx) >= g_config.min_travel) {
-		ctx->state = GS_ARMED;
-		ctx->start_x = avg_x;
-		ctx->start_y = avg_y;
-		ctx->peak_velx = avg_vel;
-		ctx->dir = (avg_vel >= 0) ? 1 : -1;
+	float dp = along(ctx->axis, avg_x - ctx->start_x, avg_y - ctx->start_y);
+	if ((dp * ctx->last_fire_dir) < 0 && fabsf(dp) >= g_config.min_travel) {
+		arm_gesture(ctx, ctx->axis, avg_x, avg_y, along(ctx->axis, avg_velx, avg_vely));
 
-		for (int i = 0; i < count; ++i)
+		for (int i = 0; i < count; ++i) {
 			ctx->base_x[i] = touches[i].x;
+			ctx->base_y[i] = touches[i].y;
+		}
 	}
 
 	return true;
 }
 
 static void handle_idle_state(gesture_ctx* ctx, touch* touches, int count,
-	float avg_x, float avg_y, float avg_vel)
+	float avg_x, float avg_y, float avg_velx, float avg_vely)
 {
+	// Choose the axis from this frame's dominant finger motion. Vertical is
+	// only a candidate when a vertical command is configured, so the
+	// horizontal-only behaviour is unchanged by default. Once a gesture has
+	// fired, the axis stays locked until a finger lifts so a pause followed
+	// by a sideways twitch does not trigger the other axis.
+	gesture_axis axis = AXIS_X;
+	if (ctx->axis_locked) {
+		axis = ctx->axis;
+	} else if (vertical_enabled()) {
+		float frame_dx = 0, frame_dy = 0;
+		for (int i = 0; i < count; ++i) {
+			frame_dx += touches[i].x - ctx->base_x[i];
+			frame_dy += touches[i].y - ctx->base_y[i];
+		}
+		if (fabsf(frame_dy) > fabsf(frame_dx))
+			axis = AXIS_Y;
+	}
+
+	float avg_vel = along(axis, avg_velx, avg_vely);
 	bool fast = fabsf(avg_vel) >= g_config.velocity_pct * FAST_VEL_FACTOR;
 	float need = fast ? g_config.min_travel_fast : g_config.min_travel;
 
 	bool moved = true;
-	for (int i = 0; i < count && moved; ++i)
-		moved &= fabsf(touches[i].x - ctx->base_x[i]) >= need;
+	for (int i = 0; i < count && moved; ++i) {
+		float pos = along(axis, touches[i].x, touches[i].y);
+		float base = along(axis, ctx->base_x[i], ctx->base_y[i]);
+		moved &= fabsf(pos - base) >= need;
+	}
 
 	float dx = avg_x - ctx->start_x;
 	float dy = avg_y - ctx->start_y;
+	float dp = along(axis, dx, dy); // travel along the gesture axis
+	float ds = along(axis, dy, dx); // travel across it
 
-	if (moved && (fast || (fabsf(dx) >= ACTIVATE_PCT && fabsf(dx) > fabsf(dy)))) {
-		ctx->state = GS_ARMED;
-		ctx->start_x = avg_x;
-		ctx->start_y = avg_y;
-		ctx->peak_velx = avg_vel;
-		ctx->dir = (avg_vel >= 0) ? 1 : -1;
-	}
+	if (moved && (fast || (fabsf(dp) >= ACTIVATE_PCT && fabsf(dp) > fabsf(ds))))
+		arm_gesture(ctx, axis, avg_x, avg_y, avg_vel);
 }
 
 static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count,
-	float avg_x, float avg_y, float avg_vel)
+	float avg_x, float avg_y, float avg_velx, float avg_vely)
 {
+	gesture_axis axis = ctx->axis;
 	float dx = avg_x - ctx->start_x;
 	float dy = avg_y - ctx->start_y;
+	float dp = along(axis, dx, dy);
+	float ds = along(axis, dy, dx);
 
-	if (fabsf(dy) > fabsf(dx)) {
+	if (fabsf(ds) > fabsf(dp)) {
 		reset_gesture_state(ctx);
 		return;
 	}
 
+	float avg_vel = along(axis, avg_velx, avg_vely);
 	bool fast = fabsf(avg_vel) >= g_config.velocity_pct * FAST_VEL_FACTOR;
 	float stepReq = fast ? g_config.min_step_fast : g_config.min_step;
 
 	int mismatch_count = 0;
 	for (int i = 0; i < count; ++i) {
-		float ddx = touches[i].x - ctx->prev_x[i];
-		if (fabsf(ddx) < stepReq || (ddx * dx) < 0) {
+		float ddp = along(axis, touches[i].x - ctx->prev_x[i], touches[i].y - ctx->prev_y[i]);
+		if (fabsf(ddp) < stepReq || (ddp * dp) < 0) {
 			mismatch_count++;
 			if (mismatch_count > g_config.swipe_tolerance) {
 				reset_gesture_state(ctx);
@@ -174,15 +227,15 @@ static void handle_armed_state(gesture_ctx* ctx, touch* touches, int count,
 		}
 	}
 
-	if (fabsf(avg_vel) > fabsf(ctx->peak_velx)) {
-		ctx->peak_velx = avg_vel;
+	if (fabsf(avg_vel) > fabsf(ctx->peak_vel)) {
+		ctx->peak_vel = avg_vel;
 		ctx->dir = (avg_vel >= 0) ? 1 : -1;
 	}
 
 	if (fabsf(avg_vel) >= g_config.velocity_pct) {
 		fire_gesture(ctx, avg_vel > 0 ? 1 : -1);
-	} else if (fabsf(dx) >= g_config.distance_pct && fabsf(avg_vel) <= g_config.velocity_pct * g_config.settle_factor) {
-		fire_gesture(ctx, dx > 0 ? 1 : -1);
+	} else if (fabsf(dp) >= g_config.distance_pct && fabsf(avg_vel) <= g_config.velocity_pct * g_config.settle_factor) {
+		fire_gesture(ctx, dp > 0 ? 1 : -1);
 	}
 }
 
@@ -191,6 +244,13 @@ static void gestureCallback(touch* touches, int count)
 	pthread_mutex_lock(&g_gesture_mutex);
 
 	gesture_ctx* ctx = &g_gesture_ctx;
+
+	for (int i = 0; i < count; ++i) {
+		if (touches[i].phase == END_PHASE) {
+			ctx->axis_locked = false;
+			break;
+		}
+	}
 
 	if (ctx->state == GS_COMMITTED) {
 		if (handle_committed_state(ctx, touches, count))
@@ -201,26 +261,30 @@ static void gestureCallback(touch* touches, int count)
 		if (ctx->state == GS_ARMED)
 			ctx->state = GS_IDLE;
 
-		for (int i = 0; i < count; ++i)
+		for (int i = 0; i < count; ++i) {
 			ctx->prev_x[i] = ctx->base_x[i] = touches[i].x;
+			ctx->prev_y[i] = ctx->base_y[i] = touches[i].y;
+		}
 
 		goto unlock;
 	}
 
-	float avg_x, avg_y, avg_vel, min_x, max_x, min_y, max_y;
-	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_vel,
-		&min_x, &max_x, &min_y, &max_y);
+	float avg_x, avg_y, avg_velx, avg_vely;
+	calculate_touch_averages(touches, count, &avg_x, &avg_y, &avg_velx, &avg_vely);
 
 	if (ctx->state == GS_IDLE) {
-		handle_idle_state(ctx, touches, count, avg_x, avg_y, avg_vel);
+		handle_idle_state(ctx, touches, count, avg_x, avg_y, avg_velx, avg_vely);
 	} else if (ctx->state == GS_ARMED) {
-		handle_armed_state(ctx, touches, count, avg_x, avg_y, avg_vel);
+		handle_armed_state(ctx, touches, count, avg_x, avg_y, avg_velx, avg_vely);
 	}
 
 	for (int i = 0; i < count; ++i) {
 		ctx->prev_x[i] = touches[i].x;
-		if (ctx->state == GS_IDLE)
+		ctx->prev_y[i] = touches[i].y;
+		if (ctx->state == GS_IDLE) {
 			ctx->base_x[i] = touches[i].x;
+			ctx->base_y[i] = touches[i].y;
+		}
 	}
 
 unlock:
@@ -347,13 +411,15 @@ int main(int argc, const char* argv[])
 		NSLog(@"Accessibility permission granted. Continuing app initialization...");
 
 		g_config = load_config();
-		NSLog(@"Loaded config: fingers=%d, skip_empty=%s, wrap_around=%s, haptic=%s, swipe_left='%s', swipe_right='%s'",
+		NSLog(@"Loaded config: fingers=%d, skip_empty=%s, wrap_around=%s, haptic=%s, swipe_left='%s', swipe_right='%s', swipe_up='%s', swipe_down='%s'",
 			g_config.fingers,
 			g_config.skip_empty ? "YES" : "NO",
 			g_config.wrap_around ? "YES" : "NO",
 			g_config.haptic ? "YES" : "NO",
 			g_config.swipe_left,
-			g_config.swipe_right);
+			g_config.swipe_right,
+			g_config.swipe_up,
+			g_config.swipe_down);
 
 		g_aerospace = aerospace_new(NULL);
 		if (!g_aerospace) {

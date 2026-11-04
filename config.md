@@ -24,6 +24,10 @@ when *true*, empty workspaces are removed from the cycling order (`aerospace_lis
 
 exact finger count required for a gesture to register.
 
+### `swipe_up` / `swipe_down` · *string* · default **""** (disabled)
+
+aerospace command to run on a vertical swipe, split on whitespace into arguments, e.g. `"move-workspace-to-monitor --wrap-around next"` or `"workspace-back-and-forth"`. an empty string disables that direction. vertical gestures are only recognised when at least one of these is set, and they share the thresholds below (measured against pad height instead of width). `natural_swipe` does not apply.
+
 ### `distance_pct` · *float* · default **0.12**
 
 horizontal travel needed (≥12%) before a **slow** swipe may fire.

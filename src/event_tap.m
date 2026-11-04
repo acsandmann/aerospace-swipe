@@ -31,11 +31,14 @@ struct event_tap g_event_tap = { 0 };
 	}
 
 	double velocity_x = 0.0;
+	double velocity_y = 0.0;
 	touch_state* state = (touch_state*)CFDictionaryGetValue(touchStates, (__bridge const void*)(touchIdentity));
 	if (state) {
 		double dt = nt.timestamp - state->timestamp;
-		if (dt > 0)
+		if (dt > 0) {
 			velocity_x = (nt.x - state->x) / dt;
+			velocity_y = (nt.y - state->y) / dt;
+		}
 		state->x = nt.x;
 		state->y = nt.y;
 		state->timestamp = nt.timestamp;
@@ -48,7 +51,8 @@ struct event_tap g_event_tap = { 0 };
 			CFDictionarySetValue(touchStates, (__bridge const void*)(touchIdentity), state);
 		}
 	}
-	nt.velocity = velocity_x;
+	nt.velocity_x = velocity_x;
+	nt.velocity_y = velocity_y;
 
 	if (nt.phase == 8) {
 		CFDictionaryRemoveValue(touchStates, (__bridge const void*)(touchIdentity));

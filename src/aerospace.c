@@ -22,6 +22,7 @@
 #define SOCKET_CONNECT_RETRY_USEC 1000000
 #define SOCKET_IO_TIMEOUT_SEC 5
 #define SOCKET_PROTOCOL_VERSION 1
+#define MAX_COMMAND_ARGS 32
 
 static const char* ERROR_SOCKET_CREATE = "Failed to create Unix domain socket";
 static const char* ERROR_SOCKET_SEND = "Failed to send data through socket";
@@ -502,4 +503,26 @@ char* aerospace_list_workspaces(aerospace* client, bool include_empty)
 		const char* args[] = { "list-workspaces", "--monitor", "focused", "--empty", "no" };
 		return execute_aerospace_command(client, args, 5, "", "stdout");
 	}
+}
+
+// Run a whitespace-separated aerospace command, e.g. "move-workspace-to-monitor --wrap-around next".
+char* aerospace_run(aerospace* client, const char* command)
+{
+	if (!command || !*command)
+		return NULL;
+
+	char* buffer = strdup(command);
+	if (!buffer)
+		fatal_error("Failed to allocate command buffer");
+
+	const char* args[MAX_COMMAND_ARGS];
+	int arg_count = 0;
+	char* saveptr = NULL;
+	for (char* tok = strtok_r(buffer, " \t", &saveptr); tok && arg_count < MAX_COMMAND_ARGS;
+		tok = strtok_r(NULL, " \t", &saveptr))
+		args[arg_count++] = tok;
+
+	char* result = arg_count ? execute_aerospace_command(client, args, arg_count, "", NULL) : NULL;
+	free(buffer);
+	return result;
 }
