@@ -21,6 +21,7 @@ struct event_tap {
 };
 
 typedef struct {
+	uintptr_t id; // stable per finger for the life of the touch
 	double x;
 	double y;
 	int phase;

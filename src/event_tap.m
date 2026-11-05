@@ -23,6 +23,7 @@ struct event_tap g_event_tap = { 0 };
 	nt.timestamp = [[touchObj valueForKey:@"timestamp"] doubleValue];
 
 	id touchIdentity = [touchObj identity];
+	nt.id = (uintptr_t)[touchIdentity hash];
 
 	if (!touchStates) {
 		touchStates = CFDictionaryCreateMutable(NULL, 0,

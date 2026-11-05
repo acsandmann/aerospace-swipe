@@ -291,6 +291,14 @@ unlock:
 	pthread_mutex_unlock(&g_gesture_mutex);
 }
 
+// NSSet enumeration order is not stable from one event to the next, so sort
+// by touch identity to keep index i pointing at the same finger across frames.
+static int compare_touch_id(const void* a, const void* b)
+{
+	uintptr_t ia = ((const touch*)a)->id, ib = ((const touch*)b)->id;
+	return (ia > ib) - (ia < ib);
+}
+
 static void process_touches(NSSet<NSTouch*>* touches)
 {
 	NSUInteger buf_capacity = touches.count > 0 ? touches.count : 4;
@@ -306,6 +314,8 @@ static void process_touches(NSSet<NSTouch*>* touches)
 			buf[i++] = [TouchConverter convert_nstouch:touch];
 		}
 	}
+
+	qsort(buf, i, sizeof(touch), compare_touch_id);
 
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		gestureCallback(buf, (int)i);
