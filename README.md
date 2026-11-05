@@ -9,6 +9,7 @@ aerospace-swipe detects x-fingered(defaults to 3) swipes on your trackpad and co
 - ignores your palm if it is resting on the trackpad
 - haptics on swipe (this is off by default)
 - customizable swipe directions (natural or inverted)
+- optional vertical swipes that run any aerospace command (ex. `move-workspace-to-monitor next`)
 - swipe will wrap around workspaces (ex 1-9 workspaces, swipe right from 9 will go to 1)
 - utilizes [yyjson](https://github.com/ibireme/yyjson) for performant json ser/de
 
@@ -24,7 +25,9 @@ config file is optional and only needed if you want to change the default settin
   "natural_swipe": false,
   "wrap_around": true,
   "skip_empty": true,
-  "fingers": 3
+  "fingers": 3,
+  "swipe_up": "",
+  "swipe_down": ""
 }
 ```
 

@@ -21,11 +21,13 @@ struct event_tap {
 };
 
 typedef struct {
+	uintptr_t id; // stable per finger for the life of the touch
 	double x;
 	double y;
 	int phase;
 	double timestamp;
-	double velocity;
+	double velocity_x;
+	double velocity_y;
 	bool is_palm;
 } touch;
 
@@ -42,12 +44,21 @@ typedef enum {
 	GS_COMMITTED
 } gesture_state;
 
+// Axis a gesture travels along
+typedef enum {
+	AXIS_X,
+	AXIS_Y
+} gesture_axis;
+
 // Gesture context structure
 typedef struct {
 	gesture_state state;
-	float start_x, start_y, peak_velx;
+	gesture_axis axis;
+	bool axis_locked; // set on fire, cleared when a finger lifts
+	float start_x, start_y, peak_vel;
 	int dir, last_fire_dir;
 	float prev_x[MAX_TOUCHES], base_x[MAX_TOUCHES];
+	float prev_y[MAX_TOUCHES], base_y[MAX_TOUCHES];
 } gesture_ctx;
 
 // Palm rejection tracking structure
